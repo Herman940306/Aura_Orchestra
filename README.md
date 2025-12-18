@@ -1,6 +1,6 @@
 # Aura_Orchestra
 
-**Aura_Orchestra** is a governed, auditable, production-grade AI orchestration system designed to transform product requirements into verified, testable, production-ready software.
+**Aura_Orchestra** is a self-governing, auditable, multi-model AI production platform designed to transform product requirements into verified, testable, production-ready software.
 
 ## Core Principles
 - **Director has absolute visibility**: All actions are logged and auditable

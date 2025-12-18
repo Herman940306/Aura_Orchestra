@@ -1,0 +1,121 @@
+DOCUMENT 1 — Aura_Orchestra PRD (Production Guide)
+1. Purpose
+Aura_Orchestra is a self‑governing, auditable, multi‑model AI production platform designed to transform a PRD into tested, documented, production‑ready software using a structured AI workforce with accountability, scoring, enforcement, and recovery.
+
+2. Core Objectives
+Deterministic task execution
+
+Zero‑trust model participation
+
+Full audit trail (1‑year retention)
+
+Self‑healing infrastructure
+
+Human‑in‑the‑loop authority retained
+
+Multi‑OS compatibility (Windows dev / Linux prod)
+
+3. System Roles (Functional)
+Role	Responsibility
+Director (Human)	Final authority, policy override
+Manager (Orchestrator)	Task decomposition, routing
+Employees (Models)	Task execution
+Accountant	Scoring, promotion, penalties
+Auditor	Evidence gathering, anomaly detection
+HR	Rule enforcement, lifecycle control
+API Gateway	Secure ingress
+Web UI	Monitoring & control
+MCP Interface	IDE control channel
+4. Functional Requirements
+4.1 Input Channels
+Web Interface
+
+Manager Chat (Director → Manager)
+
+Group Chat (Manager ↔ Employees)
+
+Monitoring Dashboard
+
+Archive Viewer
+
+IDE (MCP)
+
+Single‑channel communication
+
+Manager only
+
+No direct model access
+
+4.2 Task Lifecycle
+Director submits PRD/task
+
+Manager decomposes into atomic tasks
+
+Tasks queued in DB
+
+Employees assigned
+
+Results logged
+
+Auditor inspects evidence
+
+Accountant scores performance
+
+HR applies actions if needed
+
+Manager reassigns failed tasks
+
+Archive finalized outcome
+
+4.3 Model Requirements
+Each model runs in isolated container
+
+Must implement BaseModelWorker interface
+
+Must respond with telemetry
+
+Can be terminated at any time
+
+4.4 Scoring & Governance
+Metrics include:
+
+Accuracy
+
+Consistency
+
+Time to completion
+
+Scope adherence
+
+Retry count
+
+Auditor violations
+
+Manager satisfaction
+
+4.5 Data Retention
+Data	Retention
+Logs	1 year
+Incidents	1 year
+Scores	1 year
+Archives	1 year
+Cleanup	Manual Director action only
+5. Non‑Functional Requirements
+≥99% uptime for Manager
+
+Graceful degradation if model containers fail
+
+Horizontal extensibility for models
+
+No single point of failure
+
+All secrets externalized
+
+6. Production Readiness Criteria
+✅ All services expose /health
+✅ Auth & RBAC enforced
+✅ Backups running
+✅ CI passing
+✅ No hardcoded keys
+✅ Recovery tested
+

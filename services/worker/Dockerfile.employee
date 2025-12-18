@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system deps
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+# Install python deps
+# We need requests (base) + specific deps for this employee
+COPY services/worker/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# We might need openai/google-generativeai depending on the employee
+# Let's install them all for simplicity in this base-like image, 
+# or we can rely on specific requirements if we had them.
+# The previous prompt implies creating specific Dockerfiles.
+# But here I am creating a "Universal Employee" Dockerfile concept to avoid duplication.
+# Actually, let's create a Dockerfile that expects the SERVICE_NAME build arg?
+# No, let's stick to the plan: individual Dockerfiles or one shared one.
+
+# Let's install common libs
+RUN pip install openai asyncpg
+
+# Copy source code. 
+# We need 'services/worker/app' (execution logic) AND 'services/employees' (adapters)
+# This requires build context to be root.
+
+COPY services/worker/app /app/app
+COPY services/employees /app/services/employees
+COPY services/employee_ollama /app/services/employee_ollama
+COPY services/employee_openai /app/services/employee_openai
+COPY services/employee_gemini /app/services/employee_gemini
+
+# Ensure PYTHONPATH sees /app
+ENV PYTHONPATH=/app
+
+CMD ["python", "app/main.py"]

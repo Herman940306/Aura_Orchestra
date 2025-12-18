@@ -1,0 +1,208 @@
+BATCH 7 — Web Interface Layer (Frontend + API Gateway Integration)
+This batch gives you:
+
+✅ Complete folder structure for the web client
+✅ React + Vite starter template (TypeScript)
+✅ UI skeleton for Manager Chat, Group Chat, Monitoring Panels
+✅ API Gateway routing definitions
+✅ Dockerfile + docker-compose wiring
+✅ Strict implementation instructions
+1. Add Web Client Folder Structure
+Inside the repo create:
+
+aura_orchestra/
+ └── web/
+     ├── src/
+     │   ├── components/
+     │   │   ├── ChatWindow.tsx
+     │   │   ├── Sidebar.tsx
+     │   │   ├── LogsViewer.tsx
+     │   │   ├── QueueViewer.tsx
+     │   │   ├── ModelStatusCard.tsx
+     │   │   └── Header.tsx
+     │   ├── pages/
+     │   │   ├── ManagerChat.tsx
+     │   │   ├── GroupChat.tsx
+     │   │   ├── Monitoring.tsx
+     │   │   └── Archives.tsx
+     │   ├── hooks/
+     │   │   └── useWebsocket.ts
+     │   ├── api/
+     │   │   ├── gateway.ts
+     │   │   └── types.ts
+     │   ├── App.tsx
+     │   ├── main.tsx
+     │   └── index.css
+     ├── public/
+     ├── package.json
+     ├── tsconfig.json
+     ├── vite.config.ts
+     └── Dockerfile
+2. Bootstrap a Vite React TS app
+Run:
+
+cd aura_orchestra
+mkdir web
+cd web
+npm create vite@latest . -- --template react-ts
+npm install
+Then replace/add the files provided below.
+
+3. Core Components
+3.1 ChatWindow.tsx
+Skeleton chat interface for Manager + Group chat.
+
+import { useState } from "react";
+
+export default function ChatWindow({ title, onSend }) {
+  const [msg, setMsg] = useState("");
+
+  return (
+    <div className="chat-window">
+      <h2>{title}</h2>
+      <div className="chat-history" id="chat-scroll-container"></div>
+
+      <div className="chat-input">
+        <input
+          type="text"
+          value={msg}
+          onChange={e => setMsg(e.target.value)}
+          placeholder="Type your message..."
+        />
+        <button onClick={() => { onSend(msg); setMsg(""); }}>
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+3.2 Sidebar.tsx
+import { Link } from "react-router-dom";
+
+export default function Sidebar() {
+  return (
+    <div className="sidebar">
+      <h3>Aura_Orchestra</h3>
+      <ul>
+        <li><Link to="/manager">Manager Chat</Link></li>
+        <li><Link to="/group">Group Chat</Link></li>
+        <li><Link to="/monitoring">Monitoring</Link></li>
+        <li><Link to="/archives">Archives</Link></li>
+      </ul>
+    </div>
+  );
+}
+4. Pages
+4.1 ManagerChat.tsx
+import ChatWindow from "../components/ChatWindow";
+import gateway from "../api/gateway";
+
+export default function ManagerChat() {
+  const sendMessage = (text: string) => {
+    gateway.sendManagerMessage({ message: text });
+  };
+
+  return <ChatWindow title="Manager Chat" onSend={sendMessage} />;
+}
+4.2 GroupChat.tsx
+import ChatWindow from "../components/ChatWindow";
+import gateway from "../api/gateway";
+
+export default function GroupChat() {
+  const sendMessage = (text: string) => {
+    gateway.sendGroupMessage({ message: text });
+  };
+
+  return <ChatWindow title="Group Chat" onSend={sendMessage} />;
+}
+4.3 Monitoring.tsx
+import LogsViewer from "../components/LogsViewer";
+import QueueViewer from "../components/QueueViewer";
+
+export default function Monitoring() {
+  return (
+    <div className="monitoring-grid">
+      <LogsViewer />
+      <QueueViewer />
+    </div>
+  );
+}
+5. API Gateway Client (Frontend)
+Create: web/src/api/gateway.ts
+
+const API_BASE = import.meta.env.VITE_API_URL;
+
+export default {
+  sendManagerMessage: async (payload) =>
+    fetch(`${API_BASE}/manager/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+
+  sendGroupMessage: async (payload) =>
+    fetch(`${API_BASE}/group/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }),
+
+  fetchLogs: async () =>
+    fetch(`${API_BASE}/monitor/logs`).then(r => r.json()),
+
+  fetchQueue: async () =>
+    fetch(`${API_BASE}/monitor/queue`).then(r => r.json()),
+};
+6. Environment File (.env)
+Inside web/ create:
+
+VITE_API_URL=http://localhost:8000
+7. Dockerfile (Frontend)
+Place in web/Dockerfile:
+
+FROM node:18 AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 5173
+8. docker-compose Additions
+Modify root docker-compose.yml:
+
+services:
+  web:
+    build: ./web
+    container_name: aura_web
+    ports:
+      - "5173:80"
+    depends_on:
+      - api_gateway
+9. Required API Endpoints (Gateway)
+Your API gateway must expose these (implemented in Batch 6):
+
+Endpoint	Purpose
+POST /manager/message	Send message to Manager model
+POST /group/message	Send message to Group (Manager + Employees)
+GET /monitor/logs	Live logs from Postgres
+GET /monitor/queue	View task queues
+These will be fulfilled in later batches.
+
+10. Strict Implementation Steps
+Copy folder structure EXACTLY.
+
+Generate Vite project.
+
+Replace/add files as shown.
+
+Add .env.
+
+Build and run with compose.
+
+Verify web UI comes up at:
+http://localhost:5173
+
+Manager chat sends messages → API → Orchestrator.

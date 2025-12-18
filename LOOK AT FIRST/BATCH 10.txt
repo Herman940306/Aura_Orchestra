@@ -1,0 +1,208 @@
+ BATCH 10 — Accountant, Scoring, Promotion & Penalty Engine
+This is the economic nervous system of Aura_Orchestra.
+
+After this batch, the system will:
+
+Measure model performance continuously
+
+Rank employees objectively
+
+Penalize bad behavior
+
+Promote reliable models
+
+Blacklist or replace failing ones
+
+Feed decisions back into the Manager automatically
+
+This directly implements your:
+
+accountant • promotion • penalties • confidence • consistency • productivity • results‑orientation vision
+
+🧠 Conceptual Mapping (Your Org Model → System)
+Org Role	System Component
+Accountant	Scoring Engine
+HR	Promotion / Penalty Engine
+Manager	Uses scores to route work
+Auditor	Already logging evidence
+Employees	Model workers
+Director	You
+🏗️ 1. New Folder Structure
+Add:
+
+services/
+ ├── accountant/
+ │   ├── scorer.py
+ │   ├── rules.py
+ │   ├── reputation.py
+ │   ├── api.py
+ │   └── Dockerfile
+📊 2. Scoring Model (Accountant Brain)
+services/accountant/rules.py
+WEIGHTS = {
+    "confidence": 0.25,
+    "consistency": 0.20,
+    "accuracy": 0.20,
+    "productivity": 0.15,
+    "initiative": 0.10,
+    "discipline": 0.10
+}
+
+PENALTIES = {
+    "hallucination": -30,
+    "timeout": -20,
+    "scope_drift": -15,
+    "format_violation": -10
+}
+
+PROMOTION_THRESHOLD = 80
+WARNING_THRESHOLD = 50
+TERMINATION_THRESHOLD = 30
+services/accountant/scorer.py
+def calculate_score(metrics: dict, penalties: list):
+    score = 0
+
+    for k, weight in metrics.items():
+        score += weight * metrics[k]
+
+    for p in penalties:
+        score += penalties.get(p, 0)
+
+    return max(min(int(score), 100), 0)
+Metrics come from:
+
+inference duration
+
+retries
+
+auditor flags
+
+test pass rate
+
+manager satisfaction
+
+📈 3. Reputation Tracking (Long‑Term Memory)
+services/accountant/reputation.py
+def update_reputation(old_score, new_score):
+    return int((old_score * 0.7) + (new_score * 0.3))
+✅ Prevents “one lucky run”
+✅ Rewards long‑term reliability
+
+🧮 4. Accountant API
+services/accountant/api.py
+from fastapi import FastAPI
+from scorer import calculate_score
+from reputation import update_reputation
+
+app = FastAPI()
+
+@app.post("/score")
+def score_model(payload: dict):
+    score = calculate_score(
+        payload["metrics"],
+        payload.get("penalties", [])
+    )
+    reputation = update_reputation(
+        payload["previous_score"],
+        score
+    )
+
+    return {
+        "score": score,
+        "reputation": reputation,
+        "action": determine_action(reputation)
+    }
+
+def determine_action(score):
+    if score >= 80:
+        return "PROMOTE"
+    if score < 50:
+        return "WARNING"
+    if score < 30:
+        return "TERMINATE"
+    return "NONE"
+🚨 5. HR Logic (Actions Based on Scores)
+Handled by Manager using Accountant output:
+
+Action	Effect
+PROMOTE	Higher task priority, higher budget
+WARNING	Reduced autonomy
+TERMINATE	Worker disabled
+BLACKLIST	Prevent future routing
+REHIRE	Conditional comeback
+Promotion tiers:
+
+Junior
+
+Mid
+
+Senior
+
+Principal
+
+🔁 6. Manager Integration
+Inside Manager (Batch 6):
+
+if score_action == "PROMOTE":
+    model.priority += 1
+
+elif score_action == "WARNING":
+    model.cooldown = True
+
+elif score_action == "TERMINATE":
+    disable_model(model_id)
+✅ Manager reacts, not decides
+✅ Accountant is objective
+
+🧾 7. Database Tables (Additions)
+CREATE TABLE model_scores (
+    model_id TEXT,
+    score INT,
+    reputation INT,
+    action TEXT,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE model_penalties (
+    model_id TEXT,
+    reason TEXT,
+    severity INT,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+Retention rules:
+
+✅ 1 year default
+
+✅ Manual purge only (Director action)
+
+🐳 8. Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install fastapi uvicorn
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "9100"]
+🔧 9. docker‑compose Additions
+  accountant:
+    build: ./services/accountant
+    container_name: aura_accountant
+    restart: always
+Self‑healing ✅
+Isolated ✅
+
+✅ Batch 10 Exit Criteria
+You now have:
+
+Quantified model performance
+
+Long‑term memory for behavior
+
+Automatic promotions & penalties
+
+Kill‑switch for bad actors
+
+Manager guided by metrics (not vibes)
+
+Aura_Orchestra is now:
+
+An auditable, self‑governing AI workforce
+

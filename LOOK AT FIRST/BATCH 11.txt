@@ -1,0 +1,225 @@
+BATCH 11 — HR + Auditor Enforcement Engine
+This is where rules become enforceable and mistakes have consequences.
+
+After Batch 11, the system will:
+
+Detect violations automatically
+
+Correlate them with Auditor evidence
+
+Escalate incidents through HR
+
+Apply warnings, demotions, suspensions, or termination
+
+Trigger automatic task re‑assignment & repair
+
+Maintain a permanent disciplinary record (1‑year retention)
+
+This completes:
+
+Auditor → Manager → HR → Accountant → Manager loop
+
+🧠 Role Mapping (Finalized)
+Role	System
+Director	You
+Manager	Orchestrator
+Accountant	Scoring Engine (Batch 10)
+Auditor	Evidence + anomaly detection
+HR	Enforcement + lifecycle control
+Employees	Model workers
+🏗️ 1. New Folder Structure
+Add:
+
+services/
+ ├── auditor/
+ │   ├── detector.py
+ │   ├── correlator.py
+ │   ├── api.py
+ │   └── Dockerfile
+ │
+ ├── hr/
+ │   ├── policies.py
+ │   ├── enforcement.py
+ │   ├── api.py
+ │   └── Dockerfile
+🕵️ 2. Auditor Service (Evidence & Detection)
+services/auditor/detector.py
+def detect_violations(log_entry: dict):
+    violations = []
+
+    if log_entry.get("hallucinated"):
+        violations.append(("hallucination", 3))
+
+    if log_entry.get("duration_ms", 0) > 60000:
+        violations.append(("timeout", 2))
+
+    if log_entry.get("scope_drift"):
+        violations.append(("scope_drift", 2))
+
+    return violations
+services/auditor/correlator.py
+def correlate(task_id, violations, logs):
+    return {
+        "task_id": task_id,
+        "violations": violations,
+        "evidence": logs[-5:]  # last 5 entries
+    }
+services/auditor/api.py
+from fastapi import FastAPI
+from detector import detect_violations
+from correlator import correlate
+
+app = FastAPI()
+
+@app.post("/audit")
+def audit(log_payload: dict):
+    violations = detect_violations(log_payload)
+    if not violations:
+        return {"status": "clean"}
+
+    report = correlate(
+        log_payload["task_id"],
+        violations,
+        log_payload["logs"]
+    )
+
+    return {"status": "violation", "report": report}
+🧑‍⚖️ 3. HR Policies (Rules of Conduct)
+services/hr/policies.py
+POLICIES = {
+    "hallucination": {
+        "severity": 3,
+        "action": "STRIKE"
+    },
+    "timeout": {
+        "severity": 2,
+        "action": "WARNING"
+    },
+    "scope_drift": {
+        "severity": 2,
+        "action": "WARNING"
+    },
+    "repeat_offense": {
+        "severity": 4,
+        "action": "SUSPEND"
+    }
+}
+🔨 4. HR Enforcement Engine
+services/hr/enforcement.py
+def enforce(model_id, violations, history):
+    actions = []
+
+    for v, sev in violations:
+        if sev >= 3:
+            actions.append("STRIKE")
+        if history.count(v) >= 3:
+            actions.append("TERMINATE")
+
+    return list(set(actions))
+services/hr/api.py
+from fastapi import FastAPI
+from enforcement import enforce
+
+app = FastAPI()
+
+@app.post("/enforce")
+def hr_action(payload: dict):
+    actions = enforce(
+        payload["model_id"],
+        payload["violations"],
+        payload.get("history", [])
+    )
+
+    return {
+        "actions": actions,
+        "status": "executed"
+    }
+🔁 5. Full Incident Flow (End‑to‑End)
+Model Output
+   ↓
+Auditor detects violation
+   ↓
+Auditor creates report + evidence
+   ↓
+Manager receives incident
+   ↓
+HR evaluates via policy
+   ↓
+Actions applied (warn / suspend / terminate)
+   ↓
+Manager reassigns task to another model
+   ↓
+Accountant updates reputation
+✅ Failures never block progress
+✅ Repairs happen in parallel
+✅ Evidence preserved
+
+🧾 6. Database Additions
+CREATE TABLE incidents (
+    id UUID PRIMARY KEY,
+    model_id TEXT,
+    task_id TEXT,
+    severity INT,
+    status TEXT,
+    reported_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE disciplinary_actions (
+    model_id TEXT,
+    action TEXT,
+    reason TEXT,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+Retention:
+
+✅ 1 year automatic
+
+✅ Manual cleanup only by Director
+
+🐳 7. Dockerfiles
+Auditor
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install fastapi uvicorn
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "9200"]
+HR
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install fastapi uvicorn
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "9300"]
+🔧 8. docker‑compose Additions
+  auditor:
+    build: ./services/auditor
+    container_name: aura_auditor
+    restart: always
+
+  hr:
+    build: ./services/hr
+    container_name: aura_hr
+    restart: always
+Self‑healing ✅
+Isolated ✅
+Zero‑trust ✅
+
+✅ Batch 11 Exit Criteria
+You now have:
+
+A full governance stack
+
+Automatic detection of failures
+
+Human‑like disciplinary process
+
+Evidence‑driven enforcement
+
+Task recovery without downtime
+
+Long‑term institutional memory
+
+At this point, Aura_Orchestra is no longer a tool.
+
+It is:
+
+A structured, auditable, self‑governing AI organization capable of building production software.

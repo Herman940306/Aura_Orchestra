@@ -1,0 +1,26 @@
+ DOCUMENT 4 — Mermaid: Personnel Hierarchy & Reporting Flow
+graph TD
+    Director[Director<br/>(Human)]
+    Manager[Manager<br/>(Orchestrator)]
+
+    Accountant[Accountant]
+    Auditor[Auditor]
+    HR[HR]
+
+    Employee1[Employee Model A]
+    Employee2[Employee Model B]
+    EmployeeN[Employee Model N]
+
+    Director --> Manager
+
+    Manager --> Accountant
+    Manager --> Auditor
+    Manager --> HR
+
+    Accountant --> Manager
+    Auditor --> Manager
+    HR --> Manager
+
+    Manager --> Employee1
+    Manager --> Employee2
+    Manager --> EmployeeN

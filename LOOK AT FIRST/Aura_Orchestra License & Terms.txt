@@ -1,0 +1,123 @@
+Aura_Orchestra License & Terms
+Version: 1.0
+Effective Date: 2025‑12‑07
+Project: Aura_Orchestra
+Owner: The Director (Human Operator)
+
+1. License Grant
+Subject to the terms of this agreement, permission is granted to use, modify, and deploy Aura_Orchestra for personal, organizational, or internal commercial use.
+
+Allowed:
+Running Aura_Orchestra on‑prem or self‑hosted
+
+Modifying source code for internal use
+
+Adding/removing models and services
+
+Using results in commercial products
+
+Not Allowed (Without Explicit Written Permission):
+Offering Aura_Orchestra as a hosted SaaS to third parties
+
+Re‑licensing or selling Aura_Orchestra as a product
+
+Removing or bypassing governance mechanisms
+
+Disabling audit, scoring, or enforcement systems
+
+Claiming autonomous decision authority over humans
+
+2. Human Authority Clause (Non‑Negotiable)
+Aura_Orchestra is a decision‑support and execution system only.
+
+A human Director must exist at all times
+
+No component may claim legal, moral, or financial agency
+
+No component may override human instruction
+
+All outputs are advisory until explicitly approved or deployed by a human
+
+Failure to uphold this clause immediately voids all rights under this license.
+
+3. Governance Integrity Clause
+You may not:
+
+Disable HR, Auditor, or Accountant services
+
+Modify scoring rules to protect failing models
+
+Suppress incident logs or evidence
+
+Bypass task assignment through the Manager
+
+Directly command Employees while bypassing the Manager
+
+Doing so constitutes misuse.
+
+4. Liability Disclaimer
+Aura_Orchestra is provided “AS IS”, without warranty of any kind.
+
+The authors, contributors, and maintainers are not liable for:
+
+Financial loss
+
+Incorrect outputs
+
+Security breaches caused by misconfiguration
+
+Model hallucinations
+
+Production failures
+
+You, the Director, are solely responsible for:
+
+Deployments
+
+Model selection
+
+Human review
+
+Regulatory compliance
+
+5. Safety & Compliance Responsibility
+You are responsible for ensuring that:
+
+Outputs comply with local law
+
+Data handling complies with privacy regulations (e.g., GDPR)
+
+No protected or sensitive data is unlawfully processed
+
+No illegal activities are automated
+
+Aura_Orchestra does not absolve human accountability.
+
+6. Audit & Record Integrity
+If you operate Aura_Orchestra:
+
+Logs must be retained ≥ 1 year
+
+Incident records must not be falsified
+
+Audit trails must remain intact
+
+Deleting or manipulating logs to conceal errors or misuse is forbidden.
+
+7. Termination
+This license is automatically terminated if:
+
+Governance systems are intentionally disabled
+
+The Director role is removed or abandoned
+
+Aura_Orchestra is misrepresented as autonomous
+
+The system is used to bypass human oversight
+
+Upon termination, all use must cease immediately.
+
+8. Attribution
+Any public mention, documentation, or derivative work must credit:
+
+“Built using Aura_Orchestra — a governed, human‑directed AI workforce system.”

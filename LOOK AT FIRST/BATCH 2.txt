@@ -1,0 +1,432 @@
+Create these files under aura_orchestra/services/manager/ as shown. Copy‑paste exactly.
+
+1) Files & folders to create
+Folder tree (create these directories first):
+
+aura_orchestra/
+└─ services/
+   └─ manager/
+      ├─ Dockerfile
+      ├─ requirements.txt
+      └─ app/
+         ├─ main.py
+         ├─ db.py
+         ├─ leader.py
+         └─ scheduler.py
+2) requirements.txt
+aura_orchestra/services/manager/requirements.txt
+
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+asyncpg==0.28.1
+pydantic==1.10.11
+python-dotenv==1.0.0
+3) Dockerfile
+aura_orchestra/services/manager/Dockerfile
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# system deps for asyncpg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]
+4) db.py — DB helper using asyncpg
+aura_orchestra/services/manager/app/db.py
+
+import os
+import asyncio
+import asyncpg
+from typing import Optional
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra")
+
+_pool: Optional[asyncpg.pool.Pool] = None
+
+async def init_db_pool():
+    global _pool
+    if _pool:
+        return _pool
+    _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=8)
+    return _pool
+
+async def close_db_pool():
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+
+# simple helper to run single SQL
+async def fetchrow(query: str, *args):
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(query, *args)
+
+async def fetch(query: str, *args):
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(query, *args)
+
+async def execute(query: str, *args):
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        return await conn.execute(query, *args)
+5) leader.py — Postgres advisory lock manager
+aura_orchestra/services/manager/app/leader.py
+
+import asyncio
+import logging
+from .db import init_db_pool
+
+LOGGER = logging.getLogger("aura.manager.leader")
+
+# Choose a fixed bigint lock id for the application
+ADVISORY_LOCK_ID = 987654321012345678
+
+class LeaderElector:
+    def __init__(self, poll_interval: float = 5.0):
+        self._pool = None
+        self.is_leader = False
+        self._poll_interval = poll_interval
+        self._task = None
+
+    async def start(self):
+        self._pool = await init_db_pool()
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _try_acquire(self, conn):
+        # returns True if lock acquired
+        return await conn.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_ID)
+
+    async def _loop(self):
+        while True:
+            try:
+                async with self._pool.acquire() as conn:
+                    got = await self._try_acquire(conn)
+                    if got and not self.is_leader:
+                        LOGGER.info("Acquired leader lock")
+                        self.is_leader = True
+                    elif not got and self.is_leader:
+                        LOGGER.warning("Lost leader lock")
+                        self.is_leader = False
+                await asyncio.sleep(self._poll_interval)
+            except Exception as e:
+                LOGGER.exception("Leader election loop error: %s", e)
+                # on DB failure, we are not leader
+                self.is_leader = False
+                await asyncio.sleep(5)
+6) scheduler.py — queue assignment worker (runs only when leader)
+aura_orchestra/services/manager/app/scheduler.py
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone
+from .db import init_db_pool
+
+LOGGER = logging.getLogger("aura.manager.scheduler")
+
+# how often scheduler wakes to look for queued jobs
+SCHEDULER_POLL_SECONDS = 2
+
+class Scheduler:
+    def __init__(self, leader_elector, poll_interval=SCHEDULER_POLL_SECONDS):
+        self.leader = leader_elector
+        self._pool = None
+        self._task = None
+        self._poll_interval = poll_interval
+
+    async def start(self):
+        self._pool = await init_db_pool()
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _loop(self):
+        while True:
+            try:
+                if not self.leader.is_leader:
+                    await asyncio.sleep(self._poll_interval)
+                    continue
+                # claim a QUEUED job atomically: SELECT ... FOR UPDATE SKIP LOCKED
+                async with self._pool.acquire() as conn:
+                    async with conn.transaction():
+                        row = await conn.fetchrow("""
+                            SELECT id, project_id, role, status
+                            FROM jobs
+                            WHERE status = 'QUEUED'
+                            ORDER BY created_at ASC
+                            FOR UPDATE SKIP LOCKED
+                            LIMIT 1
+                        """)
+                        if not row:
+                            # nothing queued right now
+                            await asyncio.sleep(self._poll_interval)
+                            continue
+
+                        job_id = row["id"]
+                        LOGGER.info("Assigning job %s", job_id)
+
+                        # simple assignment policy: pick a model based on role
+                        # That's placeholder logic: in later batches manager will use model scores/history.
+                        assigned_model = self._select_model_for_role(row["role"])
+
+                        await conn.execute("""
+                            UPDATE jobs
+                            SET assigned_model = $1, status = 'ASSIGNED', completed_at = NULL
+                            WHERE id = $2
+                        """, assigned_model, job_id)
+
+                        # record assignment event
+                        await conn.execute("""
+                            INSERT INTO job_events (job_id, event_type, details)
+                            VALUES ($1, 'assigned', $2::jsonb)
+                        """, job_id, {"assigned_model": assigned_model, "assigned_at": datetime.now(timezone.utc).isoformat()})
+                await asyncio.sleep(self._poll_interval)
+            except Exception as e:
+                LOGGER.exception("Scheduler loop error: %s", e)
+                await asyncio.sleep(2)
+
+    def _select_model_for_role(self, role: str) -> str:
+        # primitive mapping for MVP: choose a model name
+        mapping = {
+            "Employee": "employee_ollama",
+            "Validator": "validator_service",
+            "Auditor": "auditor_service",
+        }
+        return mapping.get(role, "employee_ollama")
+7) main.py — FastAPI app & endpoints
+aura_orchestra/services/manager/app/main.py
+
+import os
+import uuid
+import logging
+import asyncio
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from datetime import datetime, timezone
+from .db import init_db_pool, execute, fetchrow, fetch
+from .leader import LeaderElector
+from .scheduler import Scheduler
+
+logging.basicConfig(level=logging.INFO)
+LOGGER = logging.getLogger("aura.manager")
+
+app = FastAPI(title="Aura_Orchestra Manager")
+
+# models
+class PRD(BaseModel):
+    project_id: int
+    title: str
+    tasks: list
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra")
+
+leader = LeaderElector()
+scheduler = Scheduler(leader)
+
+@app.on_event("startup")
+async def startup():
+    # init DB pool and start leader election + scheduler
+    await init_db_pool()
+    await leader.start()
+    await scheduler.start()
+    LOGGER.info("Manager started")
+
+@app.on_event("shutdown")
+async def shutdown():
+    await scheduler.stop()
+    await leader.stop()
+    LOGGER.info("Manager stopped")
+
+# Health endpoints
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/ready")
+async def ready():
+    # ready when DB pool acquired
+    try:
+        pool = await init_db_pool()
+        return {"ready": True}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="DB not ready")
+
+# PRD intake endpoint: create root job + child jobs for each task
+@app.post("/prds", status_code=201)
+async def create_prd(prd: PRD):
+    # create job(s) in jobs table
+    # root job ID for traceability
+    root_job_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    # insert root as QUEUED for manager to break down, but for now create child jobs per task
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # ensure project exists (simple)
+            await conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                prd.project_id, f"project-{prd.project_id}", now
+            )
+            # create jobs for each task
+            for t in prd.tasks:
+                job_id = str(uuid.uuid4())
+                await conn.execute("""
+                    INSERT INTO jobs (id, project_id, role, assigned_model, status, created_at)
+                    VALUES ($1, $2, $3, NULL, 'QUEUED', $4)
+                """, job_id, prd.project_id, t.get("role", "Employee"), now)
+                await conn.execute("""
+                    INSERT INTO job_events (job_id, event_type, details)
+                    VALUES ($1, 'created', $2::jsonb)
+                """, job_id, {"title": prd.title, "task_payload": t})
+    return {"root_job_id": root_job_id, "message": "PRD accepted and tasks queued"}
+
+# List jobs
+@app.get("/jobs")
+async def list_jobs(status: str = None):
+    if status:
+        rows = await fetch("SELECT id, project_id, role, assigned_model, status, created_at FROM jobs WHERE status = $1 ORDER BY created_at DESC", status)
+    else:
+        rows = await fetch("SELECT id, project_id, role, assigned_model, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 200")
+    return [dict(r) for r in rows]
+
+# Manager assignment endpoint (manual override)
+@app.post("/jobs/{job_id}/assign")
+async def assign_job(job_id: str, assigned_model: str):
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        res = await conn.execute("UPDATE jobs SET assigned_model=$1, status='ASSIGNED' WHERE id=$2", assigned_model, job_id)
+        # record event
+        await conn.execute("INSERT INTO job_events (job_id, event_type, details) VALUES ($1, 'assigned_manual', $2::jsonb)", job_id, {"assigned_model": assigned_model})
+    return {"job_id": job_id, "assigned_model": assigned_model}
+
+# Simple claim endpoint for workers (workers should use DB claim in later batches; this is an HTTP helper)
+@app.post("/jobs/{job_id}/claim")
+async def claim_job(job_id: str, worker_id: str):
+    # set job to IN_PROGRESS and record heartbeat
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT status FROM jobs WHERE id=$1", job_id)
+        if not r:
+            raise HTTPException(status_code=404, detail="job not found")
+        if r["status"] not in ("ASSIGNED", "QUEUED"):
+            raise HTTPException(status_code=400, detail=f"cannot claim job in status {r['status']}")
+        await conn.execute("UPDATE jobs SET status='IN_PROGRESS', assigned_model=$1 WHERE id=$2", worker_id, job_id)
+        await conn.execute("INSERT INTO job_events (job_id, event_type, details) VALUES ($1, 'claimed', $2::jsonb)", job_id, {"worker": worker_id, "ts": datetime.now(timezone.utc).isoformat()})
+    return {"job_id": job_id, "worker": worker_id}
+
+# Worker reports completion
+class JobResult(BaseModel):
+    success: bool
+    details: dict = {}
+
+@app.post("/jobs/{job_id}/complete")
+async def complete_job(job_id: str, result: JobResult):
+    pool = await init_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE jobs SET status = $1, completed_at = $2 WHERE id = $3", ("COMPLETED" if result.success else "SUBMITTED"), datetime.now(timezone.utc), job_id)
+        await conn.execute("INSERT INTO job_events (job_id, event_type, details) VALUES ($1, 'completed', $2::jsonb)", job_id, {"success": result.success, "details": result.details})
+    return {"job_id": job_id, "status": "COMPLETED" if result.success else "SUBMITTED"}
+8) Build & run (local dev)
+From aura_orchestra/ root directory:
+
+Copy .env.example to .env and set values. If you followed Batch 1, .env exists. Make sure DATABASE_URL is present; if not, add to .env:
+
+DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+Build the manager image (docker-compose already created in Batch1; if not, you can run docker build manually):
+
+# from aura_orchestra root
+docker compose build manager
+docker compose up -d postgres
+# wait until postgres healthy (check docker logs)
+docker compose up -d manager
+Verify manager is running:
+
+# Health check
+curl http://localhost:8000/health
+# Readiness
+curl http://localhost:8000/ready
+Test PRD intake (example):
+
+curl -X POST http://localhost:8000/prds -H "Content-Type: application/json" -d '{
+  "project_id": 1,
+  "title": "Add OAuth",
+  "tasks": [
+    {"type":"IMPLEMENT","role":"Employee","payload":{"path":"auth"}},
+    {"type":"TEST","role":"Validator","payload":{"path":"tests"}}
+  ]
+}'
+List jobs:
+
+curl http://localhost:8000/jobs
+You should see created jobs with status QUEUED. The scheduler background task (if leader) will assign a queued job (status → ASSIGNED) within a few seconds. Since the scheduler selects models by role (placeholder mapping), assigned_model will populate.
+
+Manually assign a job (override):
+
+curl -X POST http://localhost:8000/jobs/<job_id>/assign -H "Content-Type: application/json" -d '"employee_ollama"'
+Simulate worker claiming and completion:
+
+# Claim
+curl -X POST http://localhost:8000/jobs/<job_id>/claim -H "Content-Type: application/json" -d '"worker_1"'
+
+# Complete
+curl -X POST http://localhost:8000/jobs/<job_id>/complete -H "Content-Type: application/json" -d '{"success": true, "details": {"tests": "all passed"}}'
+9) Verification checklist (what to confirm)
+ curl /health returns {"status":"ok"}
+
+ curl /ready returns ready true (Postgres pool established)
+
+ After POST /prds, jobs appear in jobs table (use psql): SELECT id, status, assigned_model FROM jobs;
+
+ Scheduler (leader) assigns queued jobs: status becomes ASSIGNED
+
+ /jobs lists jobs with created_at timestamps
+
+ Job events are inserted into job_events (verify with SELECT * FROM job_events LIMIT 10;)
+
+ Manager logs show leader election messages and scheduler assignments
+
+10) Notes, next steps & safety
+Leader election uses Postgres advisory lock. If multiple manager replicas are started, only one will have leader.is_leader=True and run the scheduler.
+
+The _select_model_for_role in scheduler.py is intentionally simplistic — in next batches we upgrade this to consult model scores, resource availability, and configured mapping.
+
+Worker HTTP claim/complete endpoints are provided as a convenience for testing. In later batches, workers will claim jobs directly using DB-level transactions (FOR UPDATE SKIP LOCKED) for robustness.
+
+All DB interactions use asyncpg connection pool; ensure Postgres credentials match .env.
+
+11) Troubleshooting tips
+If /ready fails, check manager logs: docker compose logs -f manager and ensure Postgres is healthy.
+
+If scheduler never assigns, ensure leader.is_leader is True in manager logs. If not, check DB is reachable and pg_try_advisory_lock can be acquired (no other process holds that lock).
+
+If you get connection errors, confirm DATABASE_URL in .env and that postgres container exposes port and has correct user/password.

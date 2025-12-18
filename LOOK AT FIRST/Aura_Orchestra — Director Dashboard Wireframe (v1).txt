@@ -1,0 +1,325 @@
+Aura_Orchestra — Director Dashboard Wireframe (v1)
+Files
+
+ui/
+└─ director_dashboard/
+   ├─ overview.json
+   ├─ monitoring.json
+   └─ intervention.json
+Each file = one Director workspace
+No overlapping authority, no hidden actions.
+
+1️⃣ overview.json
+Purpose: Strategic view
+Read‑only intelligence + high‑level control
+
+Used by Director to understand:
+
+What’s running
+
+Who’s working
+
+Overall health
+
+Zero micromanagement
+
+{
+  "meta": {
+    "screen": "Director Overview",
+    "role": "Director",
+    "access": "read_only_plus_global_controls"
+  },
+
+  "canvas": {
+    "type": "frame",
+    "width": 1440,
+    "height": 1024,
+    "layout": "grid"
+  },
+
+  "data_sources": {
+    "projects": "projects",
+    "system_health": "system_health_events",
+    "active_runs": "orchestra_runs",
+    "global_metrics": "aggregated_metrics"
+  },
+
+  "layout": [
+    {
+      "region": "sidebar",
+      "components": [
+        {
+          "type": "nav_list",
+          "items": [
+            "Projects",
+            "Runs (Active)",
+            "Runs (Archived)",
+            "System Health",
+            "Audit Logs",
+            "Settings"
+          ]
+        }
+      ]
+    },
+
+    {
+      "region": "top_bar",
+      "components": [
+        {
+          "type": "status_indicator",
+          "label": "System Mode",
+          "bound_to": "system_health.current_mode"
+        },
+        {
+          "type": "button",
+          "label": "Emergency Halt",
+          "action": "system.global_halt",
+          "role_required": "Director",
+          "severity": "critical"
+        }
+      ]
+    },
+
+    {
+      "region": "main",
+      "components": [
+        {
+          "type": "metrics_panel",
+          "title": "Global Metrics (24h)",
+          "metrics": [
+            { "label": "Active Tasks", "source": "aggregated_metrics.active_tasks" },
+            { "label": "Completed Tasks", "source": "aggregated_metrics.completed_tasks" },
+            { "label": "Failures", "source": "aggregated_metrics.failures" },
+            { "label": "Auto-Heals", "source": "aggregated_metrics.auto_heals" }
+          ]
+        },
+
+        {
+          "type": "table",
+          "title": "Active Orchestra Runs",
+          "bound_to": "orchestra_runs",
+          "columns": [
+            "Run ID",
+            "Project",
+            "Manager",
+            "Status",
+            "Confidence Score",
+            "Started At"
+          ]
+        }
+      ]
+    }
+  ]
+}
+✅ Backend alignment
+
+UI Element	Table/Event
+Metrics	aggregated_metrics
+Runs table	orchestra_runs
+System mode	system_health_events
+✅ Hierarchy enforced
+
+Director can halt system
+
+Cannot reassign tasks here
+
+No agent‑level actions
+
+2️⃣ monitoring.json
+Purpose: Live oversight
+Observe work without interfering
+
+Used by Director & Auditor.
+
+{
+  "meta": {
+    "screen": "Director Monitoring",
+    "role": "Director",
+    "access": "read_only"
+  },
+
+  "canvas": {
+    "type": "frame",
+    "width": 1440,
+    "height": 1024
+  },
+
+  "data_sources": {
+    "task_queue": "task_queue",
+    "agent_activity": "agent_activity_logs",
+    "resource_usage": "resource_metrics",
+    "audit_events": "audit_events"
+  },
+
+  "layout": [
+    {
+      "region": "main",
+      "components": [
+        {
+          "type": "table",
+          "title": "Live Task Queue",
+          "bound_to": "task_queue",
+          "columns": [
+            "Task ID",
+            "Project",
+            "Assigned Agent",
+            "Status",
+            "Priority",
+            "Time Elapsed"
+          ]
+        },
+
+        {
+          "type": "log_stream",
+          "title": "Agent Activity Stream",
+          "bound_to": "agent_activity_logs",
+          "filters": [
+            "agent_id",
+            "severity"
+          ]
+        },
+
+        {
+          "type": "metrics_panel",
+          "title": "Resource Utilization",
+          "metrics": [
+            { "label": "CPU %", "source": "resource_metrics.cpu" },
+            { "label": "RAM %", "source": "resource_metrics.memory" },
+            { "label": "GPU %", "source": "resource_metrics.gpu" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+✅ Backend alignment
+
+UI Element	Table/Event
+Task Queue	task_queue
+Agent logs	agent_activity_logs
+Resources	resource_metrics
+Auditor findings	audit_events
+✅ Policy compliance
+
+Director cannot modify
+
+Pure observability
+
+Prevents bias/interference
+
+3️⃣ intervention.json
+Purpose: Authority & correction
+The ONLY place where intervention happens
+
+Everything here:
+
+Is logged
+
+Requires confirmation
+
+Routes through Manager / HR
+
+{
+  "meta": {
+    "screen": "Director Intervention",
+    "role": "Director",
+    "access": "restricted_control"
+  },
+
+  "canvas": {
+    "type": "frame",
+    "width": 1440,
+    "height": 1024
+  },
+
+  "data_sources": {
+    "flags": "audit_events",
+    "penalties": "agent_penalties",
+    "promotions": "agent_promotions",
+    "interventions": "director_actions"
+  },
+
+  "layout": [
+    {
+      "region": "main",
+      "components": [
+        {
+          "type": "table",
+          "title": "Flagged Incidents",
+          "bound_to": "audit_events",
+          "columns": [
+            "Incident ID",
+            "Agent",
+            "Severity",
+            "Reported By",
+            "Timestamp"
+          ]
+        },
+
+        {
+          "type": "action_panel",
+          "title": "Director Actions",
+          "actions": [
+            {
+              "label": "Request Manager Review",
+              "action": "manager.review_incident",
+              "requires_reason": true
+            },
+            {
+              "label": "Initiate HR Process",
+              "action": "hr.initiate_case",
+              "severity": "high"
+            },
+            {
+              "label": "Override & Reassign Task",
+              "action": "manager.force_reassign",
+              "requires_confirmation": true
+            }
+          ]
+        },
+
+        {
+          "type": "history_panel",
+          "title": "Past Director Interventions",
+          "bound_to": "director_actions"
+        }
+      ]
+    }
+  ]
+}
+✅ Backend alignment
+
+UI Element	Table/Event
+Flags	audit_events
+Penalties	agent_penalties
+Promotions	agent_promotions
+Overrides	director_actions
+✅ Governance enforced
+
+No direct agent punishment
+
+Director → Manager → HR
+
+Every action auditable
+
+🔒 HARD GUARANTEES THIS DESIGN ENFORCES
+✔ Director can observe everything
+✔ Director can intervene only in one place
+✔ No agent or manager can hide data
+✔ No silent overrides
+✔ Every intervention = logged + replayable
+✔ Supports live + archived state
+✔ Scales from local → enterprise
+
+✅ What this is ready for
+Figma import (via JSON scene plugins)
+
+Frontend framework (React / Vue)
+
+Backend contract enforcement
+
+Policy auditing
+
+Director onboarding
+
+This dashboard is not “UI” — it is organizational law expressed visually.

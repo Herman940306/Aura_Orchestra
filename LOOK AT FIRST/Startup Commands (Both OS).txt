@@ -1,0 +1,21 @@
+Linux / WSL / Mac
+cp .env.example .env
+docker compose up --build -d
+Windows (PowerShell)
+copy .env.example .env
+docker compose up --build -d
+Verify:
+
+docker ps
+You should see:
+
+aura_postgres
+
+aura_manager
+
+✅ Batch 1 Completion Criteria
+✔ Repo boots
+✔ Postgres initializes schema
+✔ Manager container starts
+✔ No coupling failures
+✔ Cross‑OS compatible

@@ -1,0 +1,59 @@
+# Model Capabilities Registry
+# Format: model_name -> [capabilities]
+
+models:
+  employee_ollama:
+    capabilities:
+      - code
+      - analysis
+      - fast
+      - local
+    cost_tier: free
+    priority: 1  # Prefer local first
+    
+  employee_openai:
+    capabilities:
+      - code
+      - deep_reason
+      - explanations
+      - cloud
+      - premium
+    cost_tier: low
+    priority: 2
+    
+  employee_gemini:
+    capabilities:
+      - code
+      - rationale
+      - ultra
+      - cloud
+      - premium
+    cost_tier: medium
+    priority: 3
+    
+  employee_cli:
+    capabilities:
+      - compute
+      - lint
+      - test
+      - local
+      - deterministic
+    cost_tier: free
+    priority: 1
+
+# Capability definitions
+capability_definitions:
+  code: "Code generation and refactoring"
+  analysis: "Code analysis and review"
+  fast: "Quick response time"
+  deep_reason: "Complex reasoning and planning"
+  explanations: "Detailed explanations"
+  rationale: "Step-by-step reasoning"
+  ultra: "Highest quality output"
+  compute: "Computational tasks"
+  lint: "Code linting and formatting"
+  test: "Test generation and execution"
+  local: "Runs locally, no API costs"
+  cloud: "Cloud-based API"
+  premium: "High-quality commercial model"
+  deterministic: "Consistent, reproducible output"

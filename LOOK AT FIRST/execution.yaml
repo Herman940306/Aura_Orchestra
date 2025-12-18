@@ -1,0 +1,77 @@
+# infra/policies/execution.yaml
+version: "1.0"
+name: "Aura_Orchestra_Execution_Policy"
+description: "Batch execution flow, git, snapshot, testing and CI expectations."
+
+batch_policy:
+  order_enforced: true
+  parallel_execution: false
+  rollback_on_failure: true
+
+per_batch_steps:
+  - plan
+  - implementation
+  - unit_testing
+  - integration_testing
+  - security_checks
+  - snapshot_creation
+  - state_update
+  - director_notification
+
+plan_requirements:
+  path: "docs/plans"
+  required_fields:
+    - scope
+    - files_to_create
+    - commands
+    - test_plan
+    - risk_assessment
+
+git:
+  branch_naming: "feat/batch<N>-short-description"
+  commit_rules:
+    atomic: true
+    message_prefix_required: true
+  pr_required: true
+  merge_strategy: "no-ff"
+  tag_strategy: "v0.x.y-batch<N>"
+
+testing:
+  unit_tests:
+    framework: "pytest"
+    required: true
+  integration_tests:
+    path: "tests/integration"
+    naming: "test_batch<N>.sh"
+    mandatory: true
+  retries:
+    max_retries: 2
+    on_failure: "create_incident_and_pause"
+
+snapshot:
+  required: true
+  locations:
+    sandbox: "/sandbox/snapshots/"
+  naming: "batch<N>-<timestamp>"
+  include:
+    - repo_commit_sha
+    - docker_images_list
+    - env_snapshot_file (with placeholders only)
+    - test_logs
+
+state_document:
+  path: "docs/project_state.md"
+  required_after_steps:
+    - plan
+    - implementation
+    - testing
+    - deployment
+  template_path: "infra/policies/project_state_template.md"
+
+ci:
+  required_checks:
+    - unit_tests
+    - integration_tests
+    - flake8_mypy
+    - security_scan
+  gating: "protect_main_branch_if_requested"

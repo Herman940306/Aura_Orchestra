@@ -1,0 +1,459 @@
+proceeding with Batch 8 for Aura_Orchestra. This batch wires up real‑time streaming, health/status visibility, streamed inference output, and archive viewing so you can watch models work live and inspect completed artifacts.
+
+I’ll deliver:
+
+Backend changes (FastAPI): WebSocket endpoints for global events and per‑job streams, model health endpoints, archive APIs, manager broadcast helpers.
+
+Frontend changes (React): useWebsocket hook, live EventPanel, JobStream component, ModelStatusCard updates, and Archives viewer with retention info + Director purge UI.
+
+docker-compose notes and run/test steps.
+
+Verification checklist and troubleshooting tips.
+
+Copy‑paste everything into the repo sections I reference and run the commands.
+
+Summary of features added in Batch 8
+Live global event WebSocket (/ws/events) — job lifecycle events, audit alerts, log lines.
+
+Per‑job streaming channel (/ws/job/{job_id}) — streamed partial inference outputs, progressive diffs, test run logs.
+
+Model health endpoint and periodic model heartbeats (/models/{model_name}/health and /models/health).
+
+Archives API (/archives, GET /archives/{job_id}) with retention date; Director-only purge endpoint (POST /archives/{job_id}/purge).
+
+Frontend WebSocket hook and UI panels: live event feed, job streaming viewer, health dashboard, archive viewer with purge button.
+
+Manager broadcast helper to push events to connected clients (keeps events consistent and auditable).
+
+1) Backend — Manager real‑time & archive APIs
+Create/modify files under services/manager/app/:
+
+a) Add realtime.py — websocket manager & broadcast helpers
+aura_orchestra/services/manager/app/realtime.py
+
+import asyncio
+import json
+from typing import Dict, Set
+from fastapi import WebSocket
+
+class RealtimeHub:
+    def __init__(self):
+        # global event subscribers
+        self._global_clients: Set[WebSocket] = set()
+        # per-job subscribers: job_id -> set(WebSocket)
+        self._job_clients: Dict[str, Set[WebSocket]] = {}
+        # lock for thread-safety on sets
+        self._lock = asyncio.Lock()
+
+    async def connect_global(self, ws: WebSocket):
+        await ws.accept()
+        async with self._lock:
+            self._global_clients.add(ws)
+
+    async def disconnect_global(self, ws: WebSocket):
+        async with self._lock:
+            self._global_clients.discard(ws)
+
+    async def connect_job(self, ws: WebSocket, job_id: str):
+        await ws.accept()
+        async with self._lock:
+            self._job_clients.setdefault(job_id, set()).add(ws)
+
+    async def disconnect_job(self, ws: WebSocket, job_id: str):
+        async with self._lock:
+            clients = self._job_clients.get(job_id)
+            if clients:
+                clients.discard(ws)
+                if not clients:
+                    self._job_clients.pop(job_id, None)
+
+    async def broadcast_event(self, event: dict):
+        text = json.dumps(event)
+        # broadcast to all global clients
+        async with self._lock:
+            coros = [client.send_text(text) for client in list(self._global_clients)]
+        await asyncio.gather(*coros, return_exceptions=True)
+
+    async def publish_job_stream(self, job_id: str, payload: dict):
+        text = json.dumps(payload)
+        async with self._lock:
+            clients = list(self._job_clients.get(job_id, []))
+        if not clients:
+            return
+        coros = [client.send_text(text) for client in clients]
+        await asyncio.gather(*coros, return_exceptions=True)
+
+# single global hub instance to import
+hub = RealtimeHub()
+b) Add WebSocket endpoints in main.py (or a new file realtime_endpoints.py) and wiring
+Append these to aura_orchestra/services/manager/app/main.py (import hub):
+
+from fastapi import WebSocket, WebSocketDisconnect
+from .realtime import hub
+
+@app.websocket("/ws/events")
+async def websocket_events(ws: WebSocket):
+    """
+    Global event stream: job lifecycle events, audit alerts, logs.
+    """
+    await hub.connect_global(ws)
+    try:
+        while True:
+            # keep connection open; client may send pings; ignore messages
+            data = await ws.receive_text()
+            # optionally handle pings
+    except WebSocketDisconnect:
+        await hub.disconnect_global(ws)
+    except Exception:
+        await hub.disconnect_global(ws)
+
+@app.websocket("/ws/job/{job_id}")
+async def websocket_job_stream(ws: WebSocket, job_id: str):
+    """
+    Per-job stream for progressive inference outputs and logs.
+    """
+    await hub.connect_job(ws, job_id)
+    try:
+        while True:
+            await ws.receive_text()  # keep alive; ignore content
+    except WebSocketDisconnect:
+        await hub.disconnect_job(ws, job_id)
+    except Exception:
+        await hub.disconnect_job(ws, job_id)
+c) Publish events from the manager/scheduler/worker flows
+Wherever you currently insert into job_events or handle lifecycle transitions, also call hub.broadcast_event(...) with standardized events so UI and Auditor get the same feed.
+
+Example in scheduler.py after assignment:
+
+from .realtime import hub
+# ...
+await conn.execute(...)
+await conn.execute("INSERT INTO job_events ...", ...)
+# broadcast standardized event
+await hub.broadcast_event({
+    "type": "job.assigned",
+    "job_id": str(job_id),
+    "assigned_model": assigned_model,
+    "ts": datetime.now(timezone.utc).isoformat()
+})
+When a worker writes progressive output (in worker code you already call manager endpoints), manager should forward streamed chunks to the job channel by calling hub.publish_job_stream(job_id, {"type":"job.stream","chunk": "...", "ts": ...}).
+
+d) Model health endpoints & heartbeat handling
+Add these endpoints to manager:
+
+@app.post("/models/{model_name}/heartbeat")
+async def model_heartbeat(model_name: str, payload: dict):
+    """
+    Called by model worker containers periodically to announce health & resource usage.
+    payload example: {"uptime": 123, "mem_mb": 2048, "gpu_mem_mb": 8192, "status": "ok"}
+    """
+    pool = await init_db_pool()
+    await pool.execute("""
+      INSERT INTO model_health (model_name, payload, reported_at)
+      VALUES ($1, $2::jsonb, now())
+    """, model_name, payload)
+    # broadcast health change
+    await hub.broadcast_event({"type":"model.heartbeat", "model": model_name, "payload": payload, "ts": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+
+@app.get("/models/health")
+async def list_models_health():
+    rows = await fetch("""
+      SELECT model_name, payload, reported_at FROM model_health
+      WHERE reported_at >= now() - interval '5 minutes'
+      ORDER BY reported_at DESC
+    """)
+    return [dict(r) for r in rows]
+DB migration: add model_health table in infra/postgres/init/004_model_health.sql:
+
+CREATE TABLE model_health (
+  id SERIAL PRIMARY KEY,
+  model_name TEXT NOT NULL,
+  payload JSONB,
+  reported_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_model_health_reported_at ON model_health(reported_at);
+Worker containers should POST heartbeat every N seconds to /models/{name}/heartbeat.
+
+e) Archive APIs & Director purge
+Add archive listing endpoint and purge (Director only — require DIRECTOR_API_KEY header). Append:
+
+from fastapi import Header
+
+DIRECTOR_KEY = os.getenv("DIRECTOR_API_KEY", "replace_with_strong_key")
+
+@app.get("/archives")
+async def get_archives(project_id: int = None):
+    if project_id:
+        rows = await fetch("SELECT * FROM archived_jobs WHERE project_id=$1 ORDER BY archived_at DESC", project_id)
+    else:
+        rows = await fetch("SELECT * FROM archived_jobs ORDER BY archived_at DESC LIMIT 500")
+    return [dict(r) for r in rows]
+
+@app.get("/archives/{job_id}")
+async def get_archive(job_id: str):
+    row = await fetchrow("SELECT * FROM archived_jobs WHERE id = $1", job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    return dict(row)
+
+@app.post("/archives/{job_id}/purge")
+async def purge_archive(job_id: str, x_director_key: str = Header(None)):
+    if x_director_key != DIRECTOR_KEY:
+        raise HTTPException(status_code=403, detail="forbidden")
+    # check retention
+    row = await fetchrow("SELECT retention_until FROM archived_jobs WHERE id=$1", job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    if row["retention_until"] and row["retention_until"] > datetime.now(timezone.utc):
+        raise HTTPException(status_code=403, detail="retention not expired")
+    # perform purge (delete row, but log action)
+    await execute("DELETE FROM archived_jobs WHERE id=$1", job_id)
+    await execute("INSERT INTO audit_log (actor, action, details) VALUES ($1,$2,$3)", "director", "purge_archive", {"job_id": job_id})
+    await hub.broadcast_event({"type":"archive.purged","job_id": job_id, "actor":"director", "ts": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+(Note: all DB placeholders use earlier db helpers.)
+
+2) Frontend — React updates & components
+Add the following to your web/src area.
+
+a) useWebsocket hook
+web/src/hooks/useWebsocket.ts
+
+import { useEffect, useRef, useState } from "react";
+
+export default function useWebsocket(url: string, onMessage?: (data:any)=>void) {
+  const wsRef = useRef<WebSocket | null>(null);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => { setConnected(false); setTimeout(() => { /* reconnect */ }, 2000); };
+    ws.onerror = () => { /* ignore */ };
+
+    ws.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        onMessage && onMessage(data);
+      } catch(e) {
+        console.warn("ws parse error", e);
+      }
+    };
+
+    return () => {
+      try { ws.close(); } catch {}
+    };
+  }, [url]);
+
+  const send = (msg:any) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+  };
+
+  return { connected, send, wsRef };
+}
+b) EventPanel component — global live feed
+web/src/components/EventPanel.tsx
+
+import useWebsocket from "../hooks/useWebsocket";
+import { useState } from "react";
+
+export default function EventPanel() {
+  const [events, setEvents] = useState<any[]>([]);
+  const apiBase = import.meta.env.VITE_API_URL.replace("http","ws");
+  const { connected } = useWebsocket(`${apiBase}/ws/events`, (data) => {
+    setEvents(e => [data, ...e].slice(0, 200));
+  });
+
+  return (
+    <div className="event-panel">
+      <h3>Live Events {connected ? "●" : "○"}</h3>
+      <ul>
+        {events.map((e, idx) => (
+          <li key={idx}><small>{e.ts || ""}</small> <b>{e.type}</b> — {JSON.stringify(e)}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+c) JobStreamViewer — open a job stream
+web/src/components/JobStreamViewer.tsx
+
+import useWebsocket from "../hooks/useWebsocket";
+import { useEffect, useState } from "react";
+
+export default function JobStreamViewer({ jobId }: { jobId: string }) {
+  const [chunks, setChunks] = useState<string[]>([]);
+  const apiBase = import.meta.env.VITE_API_URL.replace("http","ws");
+  const { connected } = useWebsocket(`${apiBase}/ws/job/${jobId}`, (data) => {
+    // expect data.type === 'job.stream' and chunk field
+    if (data.type === "job.stream") {
+      setChunks(c => [...c, data.chunk]);
+    }
+  });
+
+  return (
+    <div className="job-stream">
+      <h4>Job Stream: {jobId} {connected ? "●":"○"}</h4>
+      <pre>{chunks.join("")}</pre>
+    </div>
+  );
+}
+d) ModelStatusCard — live health
+web/src/components/ModelStatusCard.tsx
+
+import { useEffect, useState } from "react";
+
+export default function ModelStatusCard() {
+  const [models, setModels] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function load() {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/models/health`);
+      const data = await res.json();
+      setModels(data);
+    }
+    load();
+    const iv = setInterval(load, 5000);
+    return () => clearInterval(iv);
+  }, []);
+
+  return (
+    <div className="model-status-grid">
+      {models.map((m, idx) => (
+        <div key={idx} className="model-card">
+          <h5>{m.model_name}</h5>
+          <pre>{JSON.stringify(m.payload,null,2)}</pre>
+          <small>{m.reported_at}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+e) Archives modifications — show retention & purge
+Add to web/src/pages/Archives.tsx:
+
+import { useEffect, useState } from "react";
+
+export default function Archives() {
+  const [items, setItems] = useState<any[]>([]);
+  useEffect(()=>{
+    fetch(`${import.meta.env.VITE_API_URL}/archives`).then(r=>r.json()).then(setItems);
+  },[]);
+  const purge = async (id:string)=>{
+    if(!confirm("Confirm purge? This is irreversible.")) return;
+    const key = prompt("Director key:");
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/archives/${id}/purge`, {
+      method: "POST",
+      headers: {"x-director-key": key || ""}
+    });
+    if(res.ok) alert("Purged");
+    setItems(items.filter(i=>i.id!==id));
+  };
+  return (
+    <div>
+      <h3>Archives</h3>
+      <ul>
+        {items.map(i=>(
+          <li key={i.id}>
+            <b>{i.id}</b> project:{i.project_id} status:{i.final_status}
+            <div>retention_until: {i.retention_until}</div>
+            <button onClick={()=>purge(i.id)}>Purge (Director only)</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+3) Worker changes — stream partial inference results
+Workers/adapters should stream partial outputs to manager via an endpoint like POST /jobs/{job_id}/stream which will forward chunks to hub.publish_job_stream.
+
+Add endpoint to manager:
+
+@app.post("/jobs/{job_id}/stream")
+async def job_stream(job_id: str, payload: dict):
+    # payload: {"chunk": "<text>", "final": bool}
+    await execute("INSERT INTO job_events (job_id, event_type, details) VALUES ($1, 'stream', $2::jsonb)", job_id, payload)
+    await hub.publish_job_stream(job_id, {"type":"job.stream","chunk": payload.get("chunk"), "final": payload.get("final", False), "ts": datetime.now(timezone.utc).isoformat()})
+    return {"ok": True}
+Workers then call this endpoint frequently during inference to provide progressive feedback to UI and Auditor.
+
+4) docker-compose additions & ports
+Update docker-compose.yml (manager service must expose the WS endpoints on its port already used). Ensure the web service uses VITE_API_URL pointing to manager host:port.
+
+No new ports are required beyond Manager and Web already present. If manager uses port 8000, make sure VITE_API_URL=http://<host>:8000 in web .env.
+
+5) Run & Verification steps
+Ensure Postgres has migration 004_model_health.sql present; either recreate DB or apply migration:
+
+docker compose exec postgres psql -U aura_admin -d aura_orchestra -f infra/postgres/init/004_model_health.sql
+Rebuild manager to include realtime module:
+
+docker compose build manager
+docker compose up -d manager
+Rebuild web and worker if needed:
+
+docker compose build web worker
+docker compose up -d web worker
+Open http://localhost:5173 (web UI). Navigate to Monitoring page.
+
+In terminal, simulate a PRD and ensure jobs are created:
+
+curl -X POST http://localhost:8000/prds -H "Content-Type: application/json" -d '{"project_id":1,"title":"Stream test","tasks":[{"role":"Employee","payload":{}}]}'
+Observe in Web UI:
+
+New event appears in EventPanel (job.created → job.assigned → job.claimed).
+
+Click a job in queue; open JobStreamViewer(<job_id>) to follow streaming output.
+
+ModelStatusCard should display recent heartbeats (simulate heartbeat by POSTing to /models/worker_1/heartbeat).
+
+Simulate worker stream:
+
+curl -X POST http://localhost:8000/jobs/<job_id>/stream -H "Content-Type: application/json" -d '{"chunk":"partial output 1\n", "final": false}'
+curl -X POST http://localhost:8000/jobs/<job_id>/stream -H "Content-Type: application/json" -d '{"chunk":"final output\n", "final": true}'
+UI JobStreamViewer should show chunks appended.
+
+Archives: browse Archives page; see retention_until values. Try purge (will require Director key).
+
+6) Security notes & authentication
+WebSocket endpoints inherit manager auth if required. For MVP we allow unauthenticated read. In production, secure WS endpoints via JWT token param or cookie (add Authorization header on WS handshake if using libs that support it).
+
+Director purge endpoint requires x-director-key header. Move secret out of .env to a secrets manager for production.
+
+7) Troubleshooting
+WS connection fails: ensure manager port is reachable, CORS allowed (FastAPI allow_origins set), and client uses ws:// not http://.
+
+No events shown: ensure manager calls hub.broadcast_event where job events created. Verify job_events table is being populated and manager logs show broadcast_event calls.
+
+UI shows disconnected: check browser console for WebSocket errors and origin restrictions.
+
+8) Next steps (Batch 9 suggestions)
+When Batch 8 is stable, we proceed to:
+
+Batch 9: Production readiness — TLS, authentication, RBAC enforcement on WS, Prometheus metrics from hub and WS latency, and UI polishing (infinite scroll, search, filters).
+
+Add Grafana dashboards for live queue depth, job processing latency, model health over time.
+
+9) Quick recap & deliverables included
+I have provided:
+
+realtime.py hub + WS endpoints example
+
+/jobs/{job_id}/stream endpoint
+
+/ws/events and /ws/job/{job_id} WebSocket endpoints
+
+model heartbeat endpoints and model_health migration
+
+archive listing + Director purge API
+
+Frontend useWebsocket hook, EventPanel, JobStreamViewer, ModelStatusCard, Archives UI code
+
+How to publish events and stream chunks from manager and worker
+
+Verification steps and troubleshooting

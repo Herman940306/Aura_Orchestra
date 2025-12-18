@@ -1,0 +1,69 @@
+-- ============
+-- CORE TABLES
+-- ============
+
+CREATE TABLE projects (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE jobs (
+    id UUID PRIMARY KEY,
+    project_id INT REFERENCES projects(id),
+    role TEXT NOT NULL,
+    assigned_model TEXT,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE job_events (
+    id SERIAL PRIMARY KEY,
+    job_id UUID NOT NULL,
+    event_type TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ============
+-- SCORING / GOVERNANCE
+-- ============
+
+CREATE TABLE job_scores (
+    id SERIAL PRIMARY KEY,
+    job_id UUID NOT NULL,
+    accuracy NUMERIC,
+    consistency NUMERIC,
+    severity NUMERIC,
+    initiative NUMERIC,
+    confidence NUMERIC,
+    calculated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ============
+-- ARCHIVE (IMMUTABLE)
+-- ============
+
+CREATE TABLE archived_jobs (
+    id UUID PRIMARY KEY,
+    project_id INT,
+    role TEXT,
+    assigned_model TEXT,
+    final_status TEXT,
+    completed_at TIMESTAMPTZ,
+    archived_at TIMESTAMPTZ DEFAULT now(),
+    retention_until TIMESTAMPTZ
+);
+
+-- ============
+-- AUDIT LOG (HUMAN ONLY)
+-- ============
+
+CREATE TABLE audit_log (
+    id SERIAL PRIMARY KEY,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);

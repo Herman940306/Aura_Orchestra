@@ -1,0 +1,212 @@
+🔴 Critical Gaps / Enhancements (High Priority)
+These are the things that will bite you later if ignored.
+
+1️⃣ Deterministic Reproducibility Layer (VERY IMPORTANT)
+Problem
+LLMs are probabilistic. When something goes wrong, you must be able to replay it.
+
+Enhancement
+Add Execution Snapshots per task:
+
+Store per task:
+
+model name + version
+
+temperature / params
+
+prompt hash
+
+tool versions
+
+repo commit hash
+
+environment hash
+
+✅ This allows:
+
+forensic audits
+
+legal defense
+
+regression testing
+
+“prove the model failed, not the spec”
+
+New table:
+
+CREATE TABLE execution_snapshots (
+  task_id UUID,
+  model_id TEXT,
+  model_version TEXT,
+  prompt_hash TEXT,
+  params JSONB,
+  env_hash TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+2️⃣ Formal Trust Boundaries Between Roles
+Right now roles exist, but you should codify what they are ALLOWED to do.
+
+Add a Capability Matrix
+Role	May Write Code	May Modify Prompt	May Kill Model	May Access Logs
+Director	✅	✅	✅	✅
+Manager	✅	✅	✅	✅
+Accountant	❌	❌	❌	✅
+Auditor	❌	❌	❌	✅
+Employee	✅ (sandbox only)	❌	❌	❌
+✅ Enforce via:
+
+API gates
+
+service‑to‑service auth tokens
+
+explicit deny rules
+
+3️⃣ Model Prompt Contamination Protection
+Threat
+Models reading logs or outputs can poison future behavior.
+
+Enhancement
+Add:
+
+Read‑only redacted logs for models
+
+Never feed raw auditor findings back into prompt
+
+Sanitization step before reuse of outputs
+
+Think of it as air‑gapped memory planes:
+
+Execution memory
+
+Audit memory
+
+Policy memory
+
+They must never mix automatically.
+
+4️⃣ Quota + Budget Enforcer (Hard Stop Layer)
+You have scoring, but you need hard ceilings.
+
+Add:
+max tokens per task
+
+max retries
+
+max wall‑time per job
+
+max concurrency per model
+
+Example:
+
+limits:
+  tokens_max: 120_000
+  retries_max: 2
+  runtime_max_sec: 900
+Manager must kill jobs that exceed this.
+
+✅ Prevents:
+
+infinite loops
+
+GPU starvation
+
+surprise cloud bills
+
+5️⃣ Human Escalation Mode (Red Button)
+When things go wrong, automation must stop cleanly.
+
+Add:
+Director “Pause Organization” switch
+
+Freeze all queues
+
+Allow inspection without mutation
+
+This is essential for:
+
+production incidents
+
+legal review
+
+data contamination events
+
+6️⃣ Non‑Functional Testing (Often Forgotten)
+You already test correctness. Also add:
+
+✅ Load testing
+✅ Failure injection (kill container mid‑task)
+✅ Network partition tests
+✅ Slow model simulation
+
+This ensures your self‑healing claim is real.
+
+7️⃣ Time‑Based Trust Decay
+A model that was good 6 months ago may not be today.
+
+Enhancement
+Decay reputation over time:
+
+effective_score = reputation * e^(-λ * age)
+✅ Forces:
+
+re‑validation
+
+prevents “stale promotions”
+
+keeps org adaptive
+
+8️⃣ Cross‑Model Collusion Protection (Subtle but Real)
+If multiple models validate each other, they can agree on wrong output.
+
+Add:
+at least one dissenting reviewer (different vendor or smaller model)
+
+random challenge prompts
+
+confidence divergence detection
+
+If confidence is high but disagreement is high → flag for Auditor.
+
+9️⃣ Secure Secret Handling (Do NOT rely only on .env)
+Add:
+
+Docker secrets or Vault
+
+No plaintext API keys in logs
+
+Automatic key rotation support
+
+Critical once others deploy this.
+
+10️⃣ Regulatory / Legal Safeguards (You’re close, but add this)
+In license + code of conduct:
+
+Explicit statement that models are tools, not agents
+
+Liability separation between Director & system
+
+Audit trail as “best effort compliance”
+
+This protects you later.
+
+🟢 Nice‑to‑Have (Phase 2 Enhancements)
+Model “benchmarks” leaderboard
+
+Skill tagging (e.g. backend, infra, docs)
+
+Project‑level scoring rollups
+
+Predictive failure detection
+
+“Shadow mode” model testing (runs but doesn’t affect output)
+
+🧠 Big Picture Reality Check
+You’re not building:
+
+“Another AI agent system”
+
+You’re building:
+
+An AI operating organization with governance, law, economics, and accountability
+
+That’s rare — and valuable.

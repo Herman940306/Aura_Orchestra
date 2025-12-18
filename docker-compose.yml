@@ -1,0 +1,194 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: aura_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${POSTGRES_PORT}:5432"
+
+  # Manager service (Batch 2)
+  manager:
+    build: ./services/manager
+    container_name: aura_manager
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+
+  # MCP Service (Batch 3)
+  mcp:
+    build: ./services/mcp
+    container_name: aura_mcp
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+    ports:
+      - "9000:9000"
+    depends_on:
+      - manager
+
+  # Worker Service (Batch 3)
+  worker:
+    build: ./services/worker
+    container_name: aura_worker
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+      - WORKER_ID=employee_ollama
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./sandboxes:/sandbox
+    depends_on:
+      - manager
+
+  # --- Batch 8: Web Dashboard ---
+
+  web:
+    build: ./web
+    container_name: aura_web
+    ports:
+      - "5173:80"
+    depends_on:
+      - manager
+
+  # --- Batch 6: Accountant ---
+
+  accountant:
+    build: ./services/accountant
+    container_name: aura_accountant
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+    ports:
+      - "8500:8000"
+    depends_on:
+      - postgres
+
+  # --- Batch 5: Router ---
+
+  router:
+    build:
+      context: .
+      dockerfile: services/router/Dockerfile
+    container_name: aura_router
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+      - MANAGER_URL=http://manager:8000
+    ports:
+      - "8002:8000"
+    depends_on:
+      - postgres
+      - manager
+
+  # --- Batch 4: Employees ---
+
+  employee_ollama:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile.employee
+    container_name: aura_employee_ollama
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+      - MODEL_BACKEND=ollama
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - WORKER_ID=employee_ollama
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./sandboxes:/sandbox
+    depends_on:
+      - manager
+
+  employee_openai:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile.employee
+    container_name: aura_employee_openai
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+      - MODEL_BACKEND=openai
+      - WORKER_ID=employee_openai
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./sandboxes:/sandbox
+    depends_on:
+      - manager
+
+  employee_gemini:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile.employee
+    container_name: aura_employee_gemini
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+      - MODEL_BACKEND=gemini
+      - WORKER_ID=employee_gemini
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./sandboxes:/sandbox
+    depends_on:
+      - manager
+
+  # --- Batch 4: Governance ---
+
+  validator:
+    build:
+      context: .
+      dockerfile: services/validator/Dockerfile
+    container_name: aura_validator
+    restart: unless-stopped
+    environment:
+      - MANAGER_URL=http://manager:8000
+      - DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+    depends_on:
+      - manager
+      - postgres
+
+  hr:
+    build:
+      context: .
+      dockerfile: services/hr/Dockerfile
+    container_name: aura_hr
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+      - HR_WINDOW_DAYS=30
+    depends_on:
+      - postgres
+
+  auditor:
+    build:
+      context: .
+      dockerfile: services/auditor/Dockerfile
+    container_name: aura_auditor
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://aura_admin:change_me_securely@postgres:5432/aura_orchestra
+      - MANAGER_URL=http://manager:8000
+    depends_on:
+      - postgres
+      - manager
+
+volumes:
+  pg_data:

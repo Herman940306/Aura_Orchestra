@@ -1,0 +1,232 @@
+Batch 6 — Accountant + Performance Ledger + HR Triggers
+🎯 Goal of this batch
+You will gain:
+
+✔ A full scoring engine
+✔ Penalties for mistakes, hallucinations, low‑confidence output
+✔ Long‑term performance tracking in DB
+✔ Real promotion/demotion paths based on consistency
+✔ Automatic HR escalations
+This batch plugs directly into the Router and Manager from Batches 4 and 5.
+
+1️⃣ Add Accountant Service & Folder Structure
+aura_orchestra/
+├─ services/
+│  ├─ accountant/
+│  │  ├─ Dockerfile
+│  │  ├─ requirements.txt
+│  │  └─ app/
+│  │     ├─ main.py
+│  │     ├─ scorer.py
+│  │     ├─ error_classifier.py
+│  │     └─ ledger.py
+2️⃣ Accountant Dockerfile
+services/accountant/Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app ./app
+CMD ["python", "app/main.py"]
+requirements.txt
+psycopg[binary]
+pydantic
+requests
+3️⃣ Scoring Engine (Core)
+services/accountant/app/scorer.py
+from pydantic import BaseModel
+
+class ScoreResult(BaseModel):
+    score: float
+    penalties: list
+    confidence: float
+
+class Scorer:
+
+    def score(self, model_output: dict, task: dict) -> ScoreResult:
+
+        penalties = []
+
+        text = model_output.get("output","")
+        confidence = model_output.get("confidence", 0)
+
+        # Confidence penalty
+        if confidence < 0.5:
+            penalties.append("low_confidence")
+
+        # Missing output
+        if len(text.strip()) == 0:
+            penalties.append("empty_output")
+
+        # Hallucination heuristic (simple rules)
+        if "undefined" in text.lower() or "does not exist" in text.lower():
+            penalties.append("hallucination")
+
+        # Length heuristic
+        if len(text) < task.get("min_length", 40):
+            penalties.append("too_short")
+
+        base_score = confidence * 100
+
+        # Penalty application
+        penalty_points = len(penalties) * 10
+        final_score = max(0, base_score - penalty_points)
+
+        return ScoreResult(
+            score=final_score,
+            penalties=penalties,
+            confidence=confidence
+        )
+4️⃣ Error Classification Engine
+services/accountant/app/error_classifier.py
+class ErrorClassifier:
+
+    def classify(self, penalties:list):
+        sev = "low"
+
+        if "hallucination" in penalties:
+            sev = "critical"
+        elif "empty_output" in penalties:
+            sev = "high"
+        elif "too_short" in penalties:
+            sev = "medium"
+
+        return {
+            "severity": sev,
+            "categories": penalties
+        }
+This is what the Auditor will react to later.
+
+5️⃣ Performance Ledger (DB Writer)
+services/accountant/app/ledger.py
+import psycopg
+from datetime import datetime
+
+class Ledger:
+
+    def __init__(self):
+        self.conn = psycopg.connect(
+            host="db",
+            user="postgres",
+            password="postgres",
+            dbname="aura_orchestra"
+        )
+
+    def record(self, model_name, job_id, score, penalties):
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO model_performance
+                (model_name, job_id, score, penalties, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                model_name,
+                job_id,
+                score,
+                penalties,
+                datetime.utcnow()
+            ))
+            self.conn.commit()
+6️⃣ Accountant Main (Service API)
+services/accountant/app/main.py
+from fastapi import FastAPI
+from scorer import Scorer
+from error_classifier import ErrorClassifier
+from ledger import Ledger
+
+app = FastAPI(title="Aura Accountant")
+
+scorer = Scorer()
+classifier = ErrorClassifier()
+ledger = Ledger()
+
+@app.post("/evaluate")
+def evaluate(payload: dict):
+
+    result = scorer.score(payload["model_output"], payload["task"])
+    error_report = classifier.classify(result.penalties)
+
+    ledger.record(
+        payload["model_name"],
+        payload["job_id"],
+        result.score,
+        result.penalties
+    )
+
+    return {
+        "score": result.score,
+        "penalties": result.penalties,
+        "confidence": result.confidence,
+        "error_severity": error_report["severity"]
+    }
+7️⃣ Update Manager → Send output to Accountant
+Modify job completion handler:
+
+manager/jobs.py (concept)
+r = requests.post("http://accountant:8500/evaluate", json={
+    "model_name": job["model"],
+    "job_id": job_id,
+    "task": job["task"],
+    "model_output": model_output
+})
+
+evaluation = r.json()
+
+# Update job_record with scoring metadata
+update_job_score(job_id, evaluation)
+
+# If severe → notify HR system
+if evaluation["error_severity"] == "critical":
+    trigger_hr_case(job_id, job["model"])
+8️⃣ HR Escalation Logic
+HR Rules:
+Severity	Action
+low	No action
+medium	Worker receives –1 reputation
+high	Worker receives –5 reputation
+critical	Immediate HR case + worker suspended + reroute task
+Example function:
+def trigger_hr_case(job_id, model_name):
+    record_event(job_id, f"HR triggered: misconduct by {model_name}")
+    suspend_model(model_name)
+9️⃣ DB Enhancements: Add model_performance Table
+Add this migration:
+
+CREATE TABLE model_performance (
+    id SERIAL PRIMARY KEY,
+    model_name TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    score NUMERIC(5,2),
+    penalties TEXT[],
+    created_at TIMESTAMP DEFAULT NOW()
+);
+🔟 Router Now Uses Score History (Self‑Optimizing)
+Update Router:
+
+def route(self, task):
+    # Get last 10 scores per model
+    perf = fetch_performance_history()
+
+    ranked = sorted(
+        self.models,
+        key=lambda m: (
+            perf.get(m.name, 70),   # prioritize historically strong models
+            -len(m.capabilities)
+        ),
+        reverse=True
+    )
+
+    return ranked[0]
+Now Aura_Orchestra learns which employees perform best.
+
+🎉 Batch 6 Complete
+You now have:
+
+✔ Accountant scoring engine
+✔ Error classification / severity
+✔ Long‑term performance ledger
+✔ Promotion/demotion & HR escalation
+✔ Adaptive routing based on performance
+✔ Groundwork for Auditor warnings
+Aura_Orchestra now has a real governance system:
+employees improve over time, and bad behavior is corrected or punished.
+

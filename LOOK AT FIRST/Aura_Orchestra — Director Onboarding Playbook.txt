@@ -1,0 +1,147 @@
+Aura_Orchestra — Director Onboarding Playbook
+This is not optional reading.
+This is how the system stays sane, safe, and effective.
+
+1. Role of the Director (You)
+You are not a user.
+
+You are:
+
+Final authority
+
+Risk owner
+
+Policy setter
+
+Emergency override
+
+Moral and legal anchor
+
+No automated system replaces your accountability.
+
+2. Mental Model to Adopt
+Think of Aura_Orchestra as:
+
+A company of highly capable but untrusted interns
+They work fast, they forget things, and they must be supervised.
+
+Your job is not to micromanage
+Your job is to set rules and review outcomes.
+
+3. How You Interact With the System
+✅ Allowed Communication Channels
+Web Interface
+
+Strategic planning
+
+Monitoring
+
+Reviewing archives
+
+Manual overrides
+
+IDE via MCP
+
+Tactical instructions
+
+Production coding tasks
+
+Strict Manager‑only interaction
+
+You never talk directly to Employees.
+
+4. How to Issue Instructions (Best Practice)
+Bad instruction:
+
+“Build an API.”
+
+Good instruction:
+
+“Build a FastAPI service with X endpoints, Postgres persistence, tests, and Dockerfile. Do not exceed scope. Report blockers.”
+
+Remember:
+
+Ambiguity = hallucinations
+
+Precision = reliability
+
+5. When to Intervene
+You should step in when:
+
+A task retries repeatedly
+
+Two models disagree strongly
+
+HR recommends termination
+
+Auditor flags severe violations
+
+The system behaves “confident but wrong”
+
+Trust metrics — but verify outputs.
+
+6. Promotions & Trust
+Never permanently trust a model.
+
+Promotions are contextual, not absolute
+
+A Senior model today can fail tomorrow
+
+Reputation decays by design
+
+This protects you from silent regression.
+
+7. Incident Handling Playbook
+When an incident occurs:
+
+Read the Auditor report
+
+Confirm evidence
+
+Allow HR to act
+
+Let Manager reassign work
+
+Review repaired output
+
+Archive outcome
+
+Never suppress incidents.
+Silence is how systems rot.
+
+8. System Health Checklist (Weekly)
+✅ All services healthy
+
+✅ Backups completed
+
+✅ No stalled queues
+
+✅ No silent model failures
+
+✅ Scores trending normally
+
+✅ Logs intact
+
+If you skip this, you accept risk.
+
+9. Scaling Responsibly
+When adding more models:
+
+Start in probation mode
+
+Restrict task scope
+
+Observe for 7–14 days
+
+Only then increase autonomy
+
+More models ≠ more quality
+Governance scales quality.
+
+10. Final Principle
+Aura_Orchestra is powerful because it is constrained.
+
+Freedom without rules creates chaos
+Rules without humans create danger
+
+Your presence as Director is what keeps the system aligned.

@@ -1,0 +1,125 @@
+ Snapshot schema (supporting file)
+Create infra/policies/snapshot_schema.yaml to define contents of snapshots:
+
+# infra/policies/snapshot_schema.yaml
+snapshot_version: "1.0"
+fields:
+  - name: commit_sha
+    type: string
+    required: true
+  - name: tarball
+    type: string
+    required: true
+  - name: docker_images
+    type: array
+    items: string
+  - name: tests_log
+    type: string
+  - name: env_redacted
+    type: string
+  - name: run_commands
+    type: array
+    items: string
+5 — project_state_template.md (used by execution.yaml)
+# docs/project_state_template.md
+
+## <ISO8601 timestamp> — <batch or task id> — <short title>
+
+**Status:** [PLANNED | IN PROGRESS | COMPLETED | FAILED]
+
+**Branch:** feat/<branch-name>
+**Commit:** <git SHA>
+**Artifacts produced:**
+- path/to/file1
+- path/to/file2
+
+**Commands run (exact):**
+<one command per line, in code block>
+
+
+**Verification results:**
+- Test name: PASS/FAIL
+- Logs: /sandbox/snapshots/<id>/runlog.txt
+
+**Incidents (if any):**
+- short description, links to logs
+
+**Next steps:**
+1. <next step 1>
+2. <next step 2>
+
+**Notes / decisions made:**
+- decision: <text>
+- rationale: <text>
+6 — Director Control Panel Schema (JSON Schema + UI suggestions)
+Save as infra/policies/director_control_panel.schema.json.
+
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Aura_Orchestra Director Control Panel",
+  "type": "object",
+  "required": ["director_api_key", "production_deploy_confirmed"],
+  "properties": {
+    "director_api_key": {
+      "type": "string",
+      "description": "Secret token used for Director-only endpoints (do not paste in UI logs)."
+    },
+    "production_deploy_confirmed": {
+      "type": "boolean",
+      "description": "Checkbox to confirm Director consents to production deploy."
+    },
+    "pause_organization": {
+      "type": "boolean",
+      "description": "If true, pause all new job intake and freeze queues."
+    },
+    "purge_archive_job_id": {
+      "type": "string",
+      "description": "Job ID to purge (Director only)."
+    },
+    "branch_protection_enabled": {
+      "type": "boolean",
+      "description": "Enable branch protection and required CI checks."
+    },
+    "backup_now": {
+      "type": "boolean",
+      "description": "Trigger an on-demand DB backup."
+    },
+    "rotate_keys_now": {
+      "type": "boolean",
+      "description": "Trigger key rotation for stored secrets (requires vault access)."
+    }
+  },
+  "additionalProperties": false
+}
+Suggested UI layout (fields & behaviors)
+Top bar: Director identity (login via SSO or JWT)
+
+Section: Production Controls
+
+Toggle: production_deploy_confirmed (must be checked before deploy)
+
+Button: Deploy to Production (opens confirmation modal)
+
+Section: Safety Controls
+
+Button: Pause Organization (requires API key modal)
+
+Field + Button: Purge Archive (enter job id → confirm modal → requires API key)
+
+Section: Maintenance
+
+Button: Run Backup Now
+
+Button: Rotate Keys (opens vault dialog)
+
+Section: Audit & Reports
+
+Link: View project_state.md
+
+Link: View incidents/
+
+Behavior:
+
+All actions that alter state must require a Director confirmation modal that requests the Director API key (not stored in logs).
+
+All control panel actions are logged to audit_log with Director id, action, and timestamp.

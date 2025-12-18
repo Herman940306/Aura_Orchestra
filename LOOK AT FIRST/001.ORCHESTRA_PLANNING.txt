@@ -1,0 +1,562 @@
+1 — End‑to‑end checklist (what must exist before “production”)
+Repo with canonical file tree and docs.
+
+Environment management (.env) and secrets handling.
+
+Docker Compose (dev) and systemd / Compose for Ubuntu server.
+
+Services (containers):
+
+postgres (durable)
+
+manager / orchestrator (FastAPI)
+
+mcp (sandbox API + sandbox manager)
+
+employee adapters (3 containers; config‑driven: ollama, openai, gemini)
+
+validator/accountant (test runner & scoring)
+
+auditor (rules engine + alerts)
+
+ui (React monitoring + control)
+
+watchdog / reconciler (self‑healer)
+
+Sandboxes: per‑employee sandbox directories with snapshots.
+
+Job queue & state machine in Postgres (jobs, events, validation_ticks, archived_jobs, audit_logs).
+
+MCP OpenAPI & client library (Python) used by employees to talk to sandboxes.
+
+Leader election / failover (Postgres advisory locks).
+
+Health endpoints & Docker healthchecks.
+
+Logging (structured JSON logs), event streaming (SSE / WebSocket), and simple alerting (webhook/email).
+
+Retention & archive pipeline (archive on terminal state), retention enforcement and manual purge CLI web UI (Director only).
+
+IDE integration (CLI tool that talks to manager container).
+
+Tests:
+
+Unit tests for services
+
+Integration test (spin up compose stack; submit a sample PRD; expect job lifecycle -> archive)
+
+End‑to‑end demo: demo project built, tests passing, merge approval flow tested.
+
+Documentation & runbook: install on Ubuntu, run on Windows (WSL2), backup and restore Postgres, restore snapshots, manual purge workflow.
+
+CI/CD for pushing images (optional for Phase 2).
+
+Optional: Prometheus/Grafana or Grafana Loki for logs (phase 2).
+
+2 — Batch plan (I will generate these artifacts in sequence)
+I will produce files and instructions batch by batch. You can implement each batch, test it, then request the next batch. Each batch includes verification steps.
+
+Batch 1 — Repo skeleton + Postgres schema + .env + README
+Batch 2 — Manager (FastAPI) skeleton + job queue logic + DB access + leader election
+Batch 3 — MCP service + sandbox_manager.py + sandbox layout + sample real_project
+Batch 4 — Employee adapter (Ollama) container + MCP client + worker loop
+Batch 5 — Employee adapters (OpenAI + Gemini) stubs + adapter switching config
+Batch 6 — Validator/Accountant service (test runner, scoring) + scoring script
+Batch 7 — Auditor + Watchdog (reconciler) + alert hooks
+Batch 8 — Web UI (React) skeleton: dashboard, job queue, logs, archive viewer, manual purge UI
+Batch 9 — Docker Compose (dev) tuned for Wolf‑PC, healthchecks, resource limits, .env.example
+Batch 10 — Systemd unit & production runbook for Ubuntu server, GPU instructions (nvidia), backups
+Batch 11 — Integration tests & demo PRD flow + scripts to run tests
+Batch 12 — Hardening, RBAC, retention enforcement triggers, docs & final checklist for cutover to “production”
+
+I’ll generate Batches 1–3 in the next messages unless you tell me to stop; after you test each batch you ask for the next. Below are the detailed contents for each batch (what I will produce and exactly how to run and verify it).
+
+3 — Batch details, files, and strict implementation instructions
+Batch 1 — Repo skeleton + Postgres schema + .env + README
+Goal: create repo, DB schema, and basic env so services can connect.
+
+What I will generate
+
+README.md with top commands
+
+.env.example
+
+docker-compose.yml minimal (postgres only for now)
+
+db/migrations.sql — schema (jobs, job_events, job_validation_ticks, archived_jobs, audit_logs, users table maybe)
+
+Repo root structure (empty folders for services)
+
+Folder tree produced
+
+ai-org/
+├── README.md
+├── .env.example
+├── docker-compose.yml
+├── db/
+│   └── migrations.sql
+├── services/
+│   ├── manager/
+│   ├── mcp/
+│   ├── employee_ollama/
+│   ├── employee_openai/
+│   ├── employee_gemini/
+│   ├── validator/
+│   ├── auditor/
+│   └── ui/
+├── real_projects/
+└── sandboxes/
+Key files created
+
+db/migrations.sql — contains CREATE TABLE statements (I will include the schema from earlier messages).
+
+docker-compose.yml (dev minimal) with Postgres service: image postgres:15, volume pgdata, env variables from .env.
+
+.env.example:
+
+POSTGRES_DB=aiorg
+POSTGRES_USER=aiuser
+POSTGRES_PASSWORD=aipass
+MANAGER_PORT=8000
+MCP_PORT=5001
+UI_PORT=3000
+SANDBOX_BASE=./sandboxes
+Implementation steps you run locally
+
+Clone repo or copy files into C:\ai-org on Windows dev (or /home/aiorg on Ubuntu).
+
+Copy .env.example → .env and edit as desired.
+
+Run:
+
+docker compose up -d postgres
+docker compose exec postgres psql -U aiuser -d aiorg -f /path/to/db/migrations.sql
+Verify:
+
+docker compose ps
+docker compose logs postgres
+# Connect via psql:
+docker compose exec postgres psql -U aiuser -d aiorg -c '\dt'
+You should see tables created.
+
+Verification tests
+
+psql returns schema tables.
+
+Postgres container remains healthy (docker inspect or docker ps shows running).
+
+Batch 2 — Manager (FastAPI) skeleton + job queue + DB access + leader election
+Goal: manager accepts PRD, enqueues jobs, exposes health endpoints, implements leader election.
+
+What I will generate
+
+services/manager/Dockerfile
+
+services/manager/app.py (FastAPI) with endpoints:
+
+POST /prds — accept PRD JSON -> create root job and child jobs.
+
+GET /jobs — list jobs
+
+POST /jobs/{job_id}/assign — assign job (Manager workflow)
+
+GET /health & GET /ready
+
+services/manager/db.py — simple SQLAlchemy or asyncpg wrapper with connection via DATABASE_URL.
+
+services/manager/scheduler.py — job assignment worker (claims queued jobs via SELECT ... FOR UPDATE SKIP LOCKED).
+
+services/manager/leader.py — acquires Postgres advisory lock at startup, renews lock periodically; only leader runs scheduler.
+
+services/manager/requirements.txt and sample config reading from .env.
+
+Important logic
+
+Manager uses Postgres advisory lock pg_try_advisory_lock(987654321) and polls to maintain leadership.
+
+Manager enqueues jobs with status=QUEUED.
+
+Manager exposes a small web UI API (for now used by UI later).
+
+Run instructions
+
+Build and run manager (once Postgres is up):
+
+docker compose build manager
+docker compose up -d manager
+Confirm leader lock:
+
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+# POST a test PRD:
+curl -X POST http://localhost:8000/prds -H "Content-Type: application/json" -d '{"project_id":"demo","title":"Add OAuth","tasks":[{"type":"IMPLEMENT","role":"Employee","payload":{"path":"auth"}}]}'
+Check DB jobs table to see queued job rows.
+
+Verification tests
+
+/health returns 200.
+
+/ready only true when DB connected and acquiring lock.
+
+Jobs appear in jobs table with status=QUEUED.
+
+scheduler changes job to ASSIGNED when assigned (simulate assignment if employees not yet up).
+
+Batch 3 — MCP service + sandbox_manager.py + sandbox layout + sample real_project
+Goal: implement sandbox manager and MCP API that exposes read/write/patch/snapshot endpoints, plus a demo project.
+
+What I will generate
+
+services/mcp/Dockerfile
+
+services/mcp/api.py (FastAPI) implementing endpoints:
+
+POST /mcp/list_files
+
+POST /mcp/read_file
+
+POST /mcp/write_file (creates snapshot BEFORE write)
+
+POST /mcp/apply_patch
+
+POST /mcp/create_snapshot
+
+GET /mcp/diff
+
+services/mcp/sandbox_manager.py — python utilities:
+
+create sandbox: copy real_project to /sandboxes/<session_id>
+
+create snapshot: git init + commit or zip snapshot into /snapshots/<session_id>/<ts>.zip
+
+safe file operations using temp files and atomic moves
+
+permission enforcement (read‑only real_projects mount)
+
+real_projects/demo_flask/ — small Flask sample project with tests (pytest)
+
+services/mcp/README.md with API examples and expected JSON shapes.
+
+Sandbox layout
+
+/sandboxes/
+  session-<id>/
+    project/      # working copy
+    metadata.json
+/snapshots/
+  session-<id>/
+    snap-YYYYMMDD-HHMMSS.zip
+Run instructions
+
+Build and start MCP:
+
+docker compose build mcp
+docker compose up -d mcp
+Create a sandbox:
+
+curl -X POST http://localhost:5001/mcp/create_sandbox -H 'Content-Type: application/json' -d '{"project":"demo_flask","session_id":"sess1"}'
+Read a file:
+
+curl -X POST http://localhost:5001/mcp/read_file -H 'Content-Type: application/json' -d '{"session_id":"sess1","path":"app.py"}'
+Create snapshot & write:
+
+curl -X POST http://localhost:5001/mcp/create_snapshot -H 'Content-Type: application/json' -d '{"session_id":"sess1","label":"before-change"}'
+curl -X POST http://localhost:5001/mcp/write_file -H 'Content-Type: application/json' -d '{"session_id":"sess1","path":"app.py","content":"print(\"hello\")"}'
+Verification tests
+
+read_file returns correct file contents.
+
+create_snapshot creates zip file under snapshots/.
+
+write_file changes file in sandbox but not in real_projects.
+
+Attempting to write to real_projects returns error.
+
+Batch 4 — Employee adapter (Ollama) container + MCP client + worker loop
+Goal: provide a runnable employee that can claim jobs, call MCP, and submit job events.
+
+What I will generate
+
+services/employee_ollama/Dockerfile
+
+services/employee_ollama/worker.py — loop:
+
+Poll manager for assigned jobs (/jobs/claim or Manager claims assign via API)
+
+For each job: fetch files via MCP read_file, build prompt, call Ollama (or simulate if Ollama not running)
+
+When changes are ready: call mcp/create_snapshot, mcp/apply_patch, create job_event entries in DB.
+
+Submit job result to manager (POST /jobs/{job_id}/submit)
+
+Heartbeat every 20s while in progress.
+
+services/employee_ollama/requirements.txt (ollama client optional)
+
+services/employee_ollama/config.example — environment variables:
+
+MANAGER_URL=http://manager:8000
+MCP_URL=http://mcp:5001
+DB_URL=postgres://aiuser:aipass@postgres:5432/aiorg
+MODEL=ollama
+MAX_RETRIES=3
+Design notes
+
+Worker must only do MCP calls via API, never touch host FS other than its own container.
+
+Worker logs structured JSON events to stdout (so docker logs capture them), and inserts job_events in DB for audit.
+
+Run instructions
+
+Build and start:
+
+docker compose build employee_ollama
+docker compose up -d employee_ollama
+Assign a job (from manager or via DB) and observe:
+
+docker compose logs -f employee_ollama
+# You should see worker claiming job, heartbeats, MCP calls, snapshot creation.
+Verification tests
+
+Worker claims job and writes job_events rows (check DB).
+
+Snapshot created after worker attempts write.
+
+Worker submits job result and updates job status to SUBMITTED.
+
+Batch 5 — Employee adapters (OpenAI + Gemini) stubs + adapter switching config
+Goal: provide cloud adapters and easy switching.
+
+What I will generate
+
+services/employee_openai/worker.py — same worker logic but uses OpenAI via API (requires OPENAI_API_KEY in .env).
+
+services/employee_gemini/worker.py — stub that calls Google Gemini (or a stub in dev).
+
+Common adapter interface services/employees/common/adapter.py that defines generate_response(prompt, context) — each adapter implements it.
+
+services/employee_* Dockerfiles and .env.example fragments.
+
+Run instructions
+
+Provide keys in .env for cloud adapters (or leave empty for dev stubs).
+
+Switch which employee containers are active by editing docker-compose.yml and starting/stopping services.
+
+Verification
+
+Cloud adapter logs API calls (or stubs) and worker proceeds same as Ollama worker.
+
+Batch 6 — Validator/Accountant (test runner & scoring)
+Goal: automatically run tests, lint, measure metrics, produce confidence scores.
+
+What I will generate
+
+services/validator/Dockerfile
+
+services/validator/validate.py:
+
+When job submitted, run pytest in sandbox, run linters (flake8), run basic performance/size checks.
+
+Produce objective numeric scores (tests pass -> high, coverage %, lint errors penalize).
+
+Insert job_validation_ticks and produce confidence_score.
+
+Notify Manager via API POST /jobs/{job_id}/validate with score and ticks.
+
+Verification
+
+After employee submits job, validator runs and sets VALIDATING -> COMPLETED (or fails and sets ESCALATED).
+
+DB job_validation_ticks contains expected ticks.
+
+Batch 7 — Auditor + Watchdog (reconciler) + alert hooks
+Goal: real‑time watcher that flags anomalies and triggers Manager/HR flows.
+
+What I will generate
+
+services/auditor/watch.py — subscribes to DB events (poll job_events or use LISTEN/NOTIFY), implements rules:
+
+3 failed tests without corrective write => flag
+
+long-running job without heartbeat => flag
+
+scope drift detection (employee wrote files outside allowed paths) => flag
+
+Auditor writes to audit_logs and calls POST /manager/alerts.
+
+services/watchdog/reconciler.py — finds stuck IN_PROGRESS jobs (no heartbeat > N seconds), increments retry_count, requeues or escalates.
+
+Verification
+
+Induce a failing test scenario; Auditor logs an alert and Manager receives it.
+
+Simulate a crashed employee (kill container); watchdog reassigns job or flags.
+
+Batch 8 — Web UI (React) skeleton
+Goal: monitoring dashboard: live job queue, model status, audit alerts, archive viewer, manual purge UI.
+
+What I will generate
+
+services/ui/ React app scaffold (Vite + React). Pages:
+
+Dashboard: active jobs, queue depth, per-model status
+
+Job detail: event timeline, validation ticks, snapshots link
+
+Archive: list archived jobs with retention date, Director manual purge button (with confirmation modal)
+
+Alerts: Auditor alerts stream
+
+UI connects to Manager API and subscribes to Server‑Sent Events at /events for live updates.
+
+Run & verify
+
+docker compose build ui
+docker compose up -d ui
+# Visit http://localhost:3000
+Submit PRD and see it appear in UI queue and job details populate as workers proceed.
+
+Batch 9 — Docker Compose (dev) tuned for Wolf‑PC, healthchecks, resource limits, .env.example
+Goal: full compose for dev/test on Wolf‑PC with resource caps and ability to disable GPU containers on Windows.
+
+What I will generate
+
+Full docker-compose.yml including all services, ports, volumes, healthchecks, restart policies, and resource limits tuned to 16GB host. Comments explain how to increase/decrease.
+
+docker-compose.override.yml for Windows dev (disables GPU containers & reduces memory).
+
+Example .env with keys placeholders.
+
+Key settings
+
+Ollama container memory limit: 7GB, cpus: 2.0 (recommended for GTX1080 Ti usage on Ubuntu)
+
+Manager: 1G memory
+
+MCP: 512M
+
+Validator: 2G
+
+Run
+
+docker compose up -d
+Check docker compose ps and docker compose logs -f manager and health endpoints.
+
+Batch 10 — Systemd unit & production runbook for Ubuntu server, GPU instructions
+Goal: production instructions for Ubuntu server: install Docker, nvidia‑container-toolkit, systemd service, backups.
+
+What I will generate
+
+deploy/systemd/aiorg.service (as earlier)
+
+deploy/install_ubuntu.sh — install docker, docker-compose and nvidia runtime
+
+deploy/backup_postgres.sh — pg_dump script for daily backups and retention
+
+deploy/readme-deploy.md step-by-step deploy guide
+
+Verification
+
+After install, systemctl start aiorg.service should spin stack up; manager available.
+
+GPU container starts on Ubuntu and reports nvidia-smi.
+
+Batch 11 — Integration tests & demo PRD flow + scripts
+Goal: provide reproducible tests to validate whole pipeline.
+
+What I will generate
+
+tests/integration/test_end_to_end.sh — script:
+
+docker compose up -d
+
+Post sample PRD
+
+Wait for job lifecycle: QUEUED -> ASSIGNED -> IN_PROGRESS -> SUBMITTED -> VALIDATING -> COMPLETED
+
+Check archived job exists and retention_until set correctly.
+
+Unit test folders for manager (pytest), MCP (pytest), validator (pytest).
+
+Test data & sample PRDs and sample projects to run.
+
+Run
+
+bash tests/integration/test_end_to_end.sh
+Verification
+
+Script exits with 0 and prints summary. If something fails, logs show which stage failed.
+
+Batch 12 — Hardening, RBAC, retention enforcement triggers, docs & final checklist
+Goal: make system production-ready per your governance requirements.
+
+What I will generate
+
+RBAC implementation sketch: JWT with roles (Director, ManagerOperator, Auditor, HR). services/manager/auth.py
+
+Database triggers for archive insertion and retention_until calculation: SQL triggers in db/retention_triggers.sql
+
+Director-only purge endpoint and CLI: POST /archive/purge requiring Director token; logs purge action in audit_logs.
+
+Final runbook: pre‑prod checklist, backup & restore steps, security checklist, TLS setup (nginx reverse proxy).
+
+Postman collection and OpenAPI spec for MCP & Manager.
+
+Verification
+
+Try to call purge endpoint with non‑Director token → 403.
+
+Purge with Director token → logged in audit_logs.
+
+Attempt to delete archived before retention_until via API → blocked.
+
+4 — Testing & Verification checklist (what you must run for each batch)
+For every batch:
+
+Pull latest repo.
+
+Copy .env.example to .env and fill in any needed secrets.
+
+docker compose build (or up for single services).
+
+Start services for that batch (postgres + manager + mcp + employees as needed).
+
+Run the batch verification steps above.
+
+If any test fails: collect logs (docker compose logs <service>) and post them; I’ll help triage.
+
+5 — Production hardening checklist (final cutover)
+Run via systemd on Ubuntu server (aiorg.service) with docker compose in detached mode.
+
+TLS via nginx reverse proxy.
+
+Postgres backups: daily pg_dump, WAL archiving, offsite backup.
+
+Secrets management: move from .env to a secrets store (HashiCorp Vault or at minimum docker secret) before public distribution.
+
+RBAC enforced with internal JWT and audit logging—no manual DB access allowed except Director.
+
+Monitoring: add Prometheus metrics (manager exposes /metrics), Grafana dashboard, and alerting rules.
+
+Load testing: run many simultaneous PRDs to observe queue behavior and adjust resource limits.
+
+Security scanning of images (Trivy) and CI pipeline to build images on push.
+
+6 — Notes on multi‑OS & resilience (how this plan satisfies your constraints)
+Windows dev uses docker compose with docker-desktop (WSL2). Use docker-compose.override.yml to disable GPU services in dev.
+
+Ubuntu server runs GPU containers; nvidia-container-toolkit installed.
+
+Leader election (Postgres advisory lock) ensures only one manager orchestrates. Multiple manager replicas can exist for failover.
+
+Watchdog reclaims stuck jobs and ensures durability.
+
+Healthchecks + restart: unless-stopped and systemd ensure self‑healing.
+
+Postgres is single source of truth; no job is lost on container crash (durable writes).
+
+7 — Immediate next step (what I will generate next)
+I’ll start by producing Batch 1 (repo skeleton, .env.example, db/migrations.sql, minimal docker-compose.yml, README) right now so you can spin up Postgres and confirm DB schema. After you run those verification steps, say “Batch 1 OK” and I’ll deliver Batch 2.
+
+If you want me to instead jump to a different batch now, say which one (e.g. “Start with Batch 3”).

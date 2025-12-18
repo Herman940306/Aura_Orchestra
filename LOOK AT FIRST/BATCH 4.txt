@@ -1,0 +1,556 @@
+ diving into Batch 4 for Aura_Orchestra. This batch adds multi‑model adapters (Ollama, OpenAI, Gemini), resource & GPU awareness, the Accountant (scoring engine), and the HR promotion/penalty system, plus an Auditor live stream and alerting hooks.
+
+I’ll give you:
+
+A short overview of goals and assumptions.
+
+Exact files / DB migrations to add (copy‑paste ready).
+
+Adapter interface + three concrete adapter examples (Ollama, OpenAI, Gemini stub).
+
+Docker Compose additions for resource/GPU config and a Windows override note.
+
+Accountant scoring engine code and scoring formula.
+
+HR promotion/penalty service code.
+
+Auditor live stream (LISTEN/NOTIFY + SSE endpoint) + alert flow.
+
+How to run and verify everything.
+
+No questions — implement these files and steps next. If you want, I’ll generate the files themselves into the repo in the same style as prior batches.
+
+Assumptions & constraints (locked)
+Host: Wolf‑PC (dev: Windows/WSL) and Ubuntu server (prod with GTX 1080 Ti).
+
+Postgres is the single S-O-T (system of record).
+
+Max 3 model containers concurrently; adapters are pluggable.
+
+Manager remains authoritative; workers never write DB directly except via managed endpoints/insert rows (we’ll keep writes from adapters limited to job_events / model_artifacts via Manager or validated endpoints).
+
+You want local Ollama + cloud OpenAI & Gemini adapters.
+
+1 — DB migrations (add these tables)
+Create file infra/postgres/init/003_models_and_scoring.sql with:
+
+-- 003_models_and_scoring.sql
+-- Models registry and scoring history
+
+CREATE TABLE models (
+  id SERIAL PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,         -- employee_ollama, employee_openai, employee_gemini
+  kind TEXT NOT NULL,                -- local | cloud
+  endpoint TEXT,                     -- service URL or local socket
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE model_runs (
+  id BIGSERIAL PRIMARY KEY,
+  model_id INT REFERENCES models(id),
+  job_id UUID,
+  project_id INT,
+  success BOOLEAN,
+  confidence NUMERIC,       -- claimed or computed confidence
+  score NUMERIC,            -- final computed score from Accountant
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE model_scores (
+  id BIGSERIAL PRIMARY KEY,
+  model_id INT REFERENCES models(id),
+  window_start TIMESTAMPTZ,
+  window_end TIMESTAMPTZ,
+  avg_score NUMERIC,
+  tasks_completed INT,
+  promotions INT DEFAULT 0,
+  penalties INT DEFAULT 0
+);
+
+CREATE TABLE promotions (
+  id BIGSERIAL PRIMARY KEY,
+  model_id INT REFERENCES models(id),
+  action TEXT, -- promote | demote | restrict | restore
+  reason TEXT,
+  performed_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE model_artifacts (
+  id BIGSERIAL PRIMARY KEY,
+  job_id UUID,
+  model_id INT REFERENCES models(id),
+  artifact_type TEXT,   -- diff, patch, result, docs
+  artifact JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+Run via your Postgres init folder (it will run on container init) or apply directly with psql.
+
+2 — Adapter interface (common)
+Create services/employees/common/adapter.py:
+
+# services/employees/common/adapter.py
+from abc import ABC, abstractmethod
+from typing import Dict, Any
+
+class BaseAdapter(ABC):
+    """
+    Adapter interface every model worker implements.
+    """
+
+    @abstractmethod
+    def generate(self, prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Given a prompt and context (files, partial artifacts),
+        returns a structured dict:
+        {
+           "output": "full generated content or instructions",
+           "patch": unified_diff or None,
+           "explanation": "...",
+           "self_confidence": 0.0-1.0,
+           "artifacts": {...}
+        }
+        """
+        raise NotImplementedError
+All adapters must return the same shape to let Accountant compare outputs.
+
+3 — Ollama adapter (local GPU-capable)
+Create services/employee_ollama/adapter.py:
+
+# services/employee_ollama/adapter.py
+import os, json, subprocess, shutil, time
+from services.employees.common.adapter import BaseAdapter
+
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")  # change per your ollama setup
+
+class OllamaAdapter(BaseAdapter):
+    def __init__(self, model_name="llama3"):
+        self.model = model_name
+        # If you have an Ollama python client, swap here.
+
+    def generate(self, prompt: str, context: dict) -> dict:
+        # Minimal example: call ollama via CLI (if available) or HTTP.
+        # This is a conservative default that will work if user has Ollama CLI.
+        try:
+            # call ollama CLI: ollama run <model> --prompt '<prompt>' -n 1
+            proc = subprocess.run(
+                ["ollama", "run", self.model, "--json", "--prompt", prompt],
+                capture_output=True, text=True, timeout=120
+            )
+            out = proc.stdout.strip()
+            # Ollama may return JSON or text - this is a placeholder
+            response = {"output": out}
+        except Exception as e:
+            response = {"output": "", "error": str(e)}
+        # Adapter must produce these fields
+        return {
+            "output": response.get("output", ""),
+            "patch": None,
+            "explanation": "Ollama adapter output",
+            "self_confidence": 0.8,
+            "artifacts": {}
+        }
+Notes:
+
+Ollama CLI/HTTP details may differ; adapt to your local setup.
+
+For GPU use, ensure Ollama container/service is configured to use NVIDIA runtime on Ubuntu.
+
+4 — OpenAI adapter (cloud)
+Create services/employee_openai/adapter.py:
+
+# services/employee_openai/adapter.py
+import os
+from services.employees.common.adapter import BaseAdapter
+import openai
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+openai.api_key = OPENAI_API_KEY
+
+class OpenAIAdapter(BaseAdapter):
+    def __init__(self, model="gpt-4o-mini"):
+        self.model = model
+
+    def generate(self, prompt: str, context: dict) -> dict:
+        # synchronous call for simplicity
+        resp = openai.ChatCompletion.create(
+            model=self.model,
+            messages=[{"role":"user","content": prompt}],
+            max_tokens=1200
+        )
+        content = resp["choices"][0]["message"]["content"]
+        # naive confidence - real model won't return this; it's a placeholder
+        return {
+            "output": content,
+            "patch": None,
+            "explanation": "OpenAI adapter output",
+            "self_confidence": 0.85,
+            "artifacts": {}
+        }
+Add openai to adapter container requirements. For dev, you can set OPENAI_API_KEY empty and adapter will stub responses (make that behavior in code).
+
+5 — Gemini adapter (stub / cloud)
+Create services/employee_gemini/adapter.py:
+
+# services/employee_gemini/adapter.py
+from services.employees.common.adapter import BaseAdapter
+
+class GeminiAdapter(BaseAdapter):
+    def __init__(self, model_name="gemini-pro"):
+        self.model = model_name
+
+    def generate(self, prompt: str, context: dict) -> dict:
+        # Placeholder / stub for Gemini
+        # In production, implement Google SDK calls here
+        return {
+            "output": "GEMINI-STUB: " + prompt[:400],
+            "patch": None,
+            "explanation": "Gemini stub output",
+            "self_confidence": 0.7,
+            "artifacts": {}
+        }
+6 — Worker main: pluggable adapter selection
+Update services/worker/app/main.py (or create new employee_worker.py) to load adapter by env var MODEL_BACKEND:
+
+# services/worker/app/employee_worker.py
+import os, time, importlib, requests, json
+from sandbox import create_workspace, snapshot
+from reporter import report
+
+MANAGER_URL = os.getenv("MANAGER_URL", "http://manager:8000")
+MODEL_BACKEND = os.getenv("MODEL_BACKEND", "ollama")  # ollama | openai | gemini
+WORKER_ID = os.getenv("WORKER_ID", "worker_default")
+
+def load_adapter(name):
+    if name == "ollama":
+        m = importlib.import_module("services.employee_ollama.adapter")
+        return m.OllamaAdapter()
+    if name == "openai":
+        m = importlib.import_module("services.employee_openai.adapter")
+        return m.OpenAIAdapter()
+    if name == "gemini":
+        m = importlib.import_module("services.employee_gemini.adapter")
+        return m.GeminiAdapter()
+    raise RuntimeError("Unknown model backend")
+
+adapter = load_adapter(MODEL_BACKEND)
+
+def poll_job():
+    r = requests.get(f"{MANAGER_URL}/jobs?status=ASSIGNED")
+    jobs = r.json()
+    return jobs[0] if jobs else None
+
+while True:
+    job = poll_job()
+    if not job:
+        time.sleep(2)
+        continue
+    job_id = job["id"]
+    requests.post(f"{MANAGER_URL}/jobs/{job_id}/claim", json=WORKER_ID, timeout=10)
+    ws = create_workspace(job_id)
+    # read context via MCP (optional) - omitted for brevity
+    prompt = f"Implement task for job {job_id}"
+    out = adapter.generate(prompt, context={})
+    # store artifact via Manager endpoint (we will add endpoint /models/{model}/artifact)
+    try:
+        requests.post(f"{MANAGER_URL}/models/{MODEL_BACKEND}/artifact", json={
+            "job_id": job_id,
+            "artifact_type": "result",
+            "artifact": {"output": out["output"], "explanation": out.get("explanation")}
+        }, timeout=10)
+    except Exception:
+        pass
+    snap = snapshot(job_id)
+    report(job_id, True, {"snapshot": snap, "output_snippet": (out["output"][:400])})
+    time.sleep(1)
+This demonstrates adapter loading and manager artifact upload.
+
+7 — Docker Compose: resource & GPU settings
+Update docker-compose.yml adding resource limits and GPU runtime for Ollama container. Example snippet:
+
+services:
+  employee_ollama:
+    build: ./services/employee_ollama
+    env_file: .env
+    environment:
+      - MODEL_BACKEND=ollama
+    volumes:
+      - ./sandbox:/sandbox
+    deploy:
+      resources:
+        limits:
+          memory: 7G
+          cpus: "2.0"
+    runtime: nvidia          # for Ubuntu server with nvidia-container-toolkit
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    restart: unless-stopped
+
+  employee_openai:
+    build: ./services/employee_openai
+    env_file: .env
+    environment:
+      - MODEL_BACKEND=openai
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+    restart: unless-stopped
+
+  employee_gemini:
+    build: ./services/employee_gemini
+    env_file: .env
+    environment:
+      - MODEL_BACKEND=gemini
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+    restart: unless-stopped
+Windows dev note: Add docker-compose.override.yml to disable runtime: nvidia and reduce memory:
+
+services:
+  employee_ollama:
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+    environment:
+      - MODEL_BACKEND=ollama
+Run on Ubuntu server with nvidia runtime installed.
+
+8 — Accountant (scoring engine)
+Add services/validator/scoring.py (used by validator service when validating a submitted job):
+
+# services/validator/scoring.py
+from datetime import datetime, timedelta
+import math
+
+# weights (tunable)
+WEIGHTS = {
+    "tests": 0.40,
+    "cross_agreement": 0.30,
+    "docs_quality": 0.10,
+    "performance": 0.10,
+    "penalties": -0.25
+}
+
+def score_from_signals(signals: dict, penalties: float=0.0) -> float:
+    """
+    signals example:
+    {
+      "tests_passed": True,
+      "test_score": 0.9,         # normalized 0..1
+      "coverage": 0.72,         # 0..1
+      "docs_quality": 0.8,      # 0..1
+      "performance_ok": True,
+      "cross_model_agreement": 0.6  # 0..1, how many other models had same design
+    }
+    """
+    test_component = signals.get("test_score", 0.0) * WEIGHTS["tests"]
+    agreement_component = signals.get("cross_model_agreement", 0.0) * WEIGHTS["cross_agreement"]
+    docs_component = signals.get("docs_quality", 0.0) * WEIGHTS["docs_quality"]
+    perf_component = (1.0 if signals.get("performance_ok", False) else 0.0) * WEIGHTS["performance"]
+    penalty_component = penalties * WEIGHTS["penalties"]
+    raw = test_component + agreement_component + docs_component + perf_component + penalty_component
+    # clamp to 0..1
+    final = max(0.0, min(1.0, raw))
+    return final
+Validator should:
+
+Run tests (pytest) → produce test_score (0..1).
+
+Compute cross_model_agreement: query model_artifacts for same job / prd and compute similarity (text similarity / exact match count). For MVP, compute percentage of other models that produced similar API signatures or identical function names.
+
+Apply penalties from missing docs / scope drift / failing edge tests.
+
+When validator finishes, it should:
+
+Insert a model_runs row with score, confidence, details.
+
+Call Manager endpoint POST /jobs/{job_id}/validate with ticks and final numeric confidence_score.
+
+9 — Promotion / Penalty engine (HR)
+Create services/hr/hr_worker.py (periodic job):
+
+# services/hr/hr_worker.py
+import os, time
+import asyncpg
+from datetime import datetime, timedelta
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+WINDOW_DAYS = int(os.getenv("HR_WINDOW_DAYS", "30"))
+PROMOTE_THRESHOLD = float(os.getenv("PROMOTE_THRESHOLD", "0.85"))
+DEMOTE_THRESHOLD = float(os.getenv("DEMOTE_THRESHOLD", "0.50"))
+
+async def evaluate(pool):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT m.id as model_id, AVG(mr.score) as avg_score, COUNT(*) as count
+            FROM model_runs mr
+            JOIN models m ON m.id = mr.model_id
+            WHERE mr.created_at >= now() - interval '$1 days'
+            GROUP BY m.id
+        """, WINDOW_DAYS)
+        for r in rows:
+            mid = r["model_id"]
+            avg = float(r["avg_score"] or 0.0)
+            cnt = r["count"]
+            if cnt < 3:
+                continue
+            if avg >= PROMOTE_THRESHOLD:
+                # create promotion record
+                await conn.execute("INSERT INTO promotions (model_id, action, reason) VALUES ($1,$2,$3)", mid, "promote", f"avg_score {avg}")
+                # optional: update models table or weighting in manager mapping
+                await conn.execute("UPDATE models SET is_active = TRUE WHERE id = $1", mid)
+            elif avg < DEMOTE_THRESHOLD:
+                await conn.execute("INSERT INTO promotions (model_id, action, reason) VALUES ($1,$2,$3)", mid, "demote", f"avg_score {avg}")
+                await conn.execute("UPDATE models SET is_active = FALSE WHERE id = $1", mid)
+
+async def main():
+    pool = await asyncpg.create_pool(DATABASE_URL)
+    while True:
+        try:
+            await evaluate(pool)
+        except Exception as e:
+            print("HR eval error:", e)
+        await asyncio.sleep(60 * 60)  # run hourly
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+Notes:
+
+Promotion creates an audit trail in promotions.
+
+Manager should consult models.is_active when assigning tasks. You’ll add this logic in scheduler._select_model_for_role.
+
+10 — Auditor live stream & alerting
+We want Auditor to detect anomalies and notify Manager; also support UI live stream (SSE).
+
+10.1 Postgres LISTEN/NOTIFY helper
+Create a helper that NOTIFYs on critical job_events. Manager can LISTEN to channel_alerts and produce SSE.
+
+Add DB trigger (simple) to notify when an event with event_type='audit_flag' is inserted. For MVP add an app-level notifier: Auditor inserts into audit_log table and then calls Manager /alerts endpoint.
+
+10.2 Auditor service skeleton: services/auditor/watch.py
+# services/auditor/watch.py
+import os, time, requests, asyncpg
+from datetime import datetime, timedelta
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+MANAGER_URL = os.getenv("MANAGER_URL", "http://manager:8000")
+
+async def scan_and_flag(pool):
+    # Example rule: job has > 3 test failures in past 1 hour without new writes
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT j.id FROM jobs j
+            LEFT JOIN job_events e ON e.job_id = j.id
+            WHERE j.status = 'IN_PROGRESS' AND j.updated_at < now() - interval '3 minutes'
+            LIMIT 50
+        """)
+        for r in rows:
+            job_id = r["id"]
+            details = {"reason":"stalled_job_no_heartbeat"}
+            # create audit_log
+            await conn.execute("INSERT INTO audit_log (actor, action, details) VALUES ($1,$2,$3)", "auditor", "flag", details)
+            # call manager alert endpoint
+            try:
+                requests.post(f"{MANAGER_URL}/alerts", json={"job_id": job_id, "severity":"high", "reason":"stalled"})
+            except Exception:
+                pass
+
+async def main():
+    pool = await asyncpg.create_pool(DATABASE_URL)
+    while True:
+        try:
+            await scan_and_flag(pool)
+        except Exception as e:
+            print("auditor error:", e)
+        await asyncio.sleep(30)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+10.3 Manager alert endpoint (add to services/manager/app/main.py)
+@app.post("/alerts")
+async def take_alert(payload: dict):
+    # persist alert and escalate to manager dashboard
+    job_id = payload.get("job_id")
+    severity = payload.get("severity")
+    reason = payload.get("reason")
+    pool = await init_db_pool()
+    await pool.execute("INSERT INTO audit_log (actor, action, details) VALUES ($1,$2,$3)", "auditor", "alert", {"job_id": job_id, "severity": severity, "reason": reason})
+    # optionally reassign or escalate: for MVP just log and manager UI shows it
+    return {"ok": True}
+10.4 SSE endpoint for UI (Manager)
+Add SSE endpoint for UI to stream alerts. (FastAPI + sse_starlette or simple generator). For MVP you can implement a /events endpoint that streams audit_log entries by polling.
+
+11 — Service wiring & endpoints to add to Manager (brief)
+Add endpoints to Manager for:
+
+POST /models/{model_name}/register — allow model services to register (optional auto-register).
+
+POST /models/{model_name}/artifact — accept model artifacts (patch, diff) and persist to model_artifacts.
+
+GET /models — list models and is_active status.
+
+These are small endpoints — I can generate code for them when you want.
+
+12 — Compose & run steps (practical)
+Add the DB migration 003_models_and_scoring.sql to infra/postgres/init/.
+
+Rebuild and restart Postgres so the new schema applies (or run with psql).
+
+Create model registry entries (quick SQL):
+
+INSERT INTO models (name, kind, endpoint) VALUES
+('employee_ollama','local','http://employee_ollama:5010'),
+('employee_openai','cloud','http://employee_openai:5020'),
+('employee_gemini','cloud','http://employee_gemini:5030');
+Update docker-compose.yml to include new services (employee_ollama, employee_openai, employee_gemini, validator, hr, auditor). Use the resource/GPU snippets above. Example for Ollama on Ubuntu: add runtime: nvidia and limit memory 7G. On Windows docker-compose.override.yml disable gpu runtime.
+
+Build adapters and workers:
+
+docker compose build employee_ollama employee_openai employee_gemini validator hr auditor
+docker compose up -d
+Test flow:
+
+Submit PRD (via Manager or MCP).
+
+Confirm scheduler assigns to an active model (assigned_model).
+
+Worker claims, calls its adapter, uploads artifact to Manager /models/{model}/artifact.
+
+Snapshot created and job completed.
+
+Validator picks job up (via Manager notifying or by polling SUBMITTED status) and runs scoring, inserts model_runs.
+
+HR evaluates periodically and (if thresholds hit) writes promotions rows.
+
+Auditor polls and issues alerts to Manager if anomalies occur.
+
+13 — Verification checklist (Batch 4)
+ Postgres has new tables: models, model_runs, model_artifacts, model_scores, promotions.
+
+ Each model service can start and register (or you inserted via SQL).
+
+ Manager /models lists registered models and is_active.
+
+ Adapter for Ollama returns a valid response shape (test manually by running adapter.generate()).
+
+ Worker can claim an assigned job and call POST /models/{model}/artifact — check model_artifacts table.
+
+ Validator computes a numeric score via scoring.py and writes a model_runs row.
+
+ HR process runs hourly (you can reduce interval to 1 minute in dev) and generates a promotions entry if thresholds are met.
+
+ Auditor detects a simulated stalled job and posts an alert — check audit_log and Manager /alerts logged entry.
+
+ Resource limits apply (start a heavy local Ollama; other services remain responsive). On Ubuntu, Ollama uses GPU; on Windows, Ollama falls back to CPU or is disabled.
+

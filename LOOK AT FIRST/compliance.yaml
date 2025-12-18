@@ -1,0 +1,56 @@
+# infra/policies/compliance.yaml
+version: "1.0"
+name: "Aura_Orchestra_Compliance_Policy"
+description: "Retention, backups, reporting, finalization requirements and director controls."
+
+retention:
+  logs_days: 365
+  incidents_days: 365
+  archives_days: 365
+  deletion_policy: "manual_by_director_only"
+
+backups:
+  postgres:
+    frequency: "daily"
+    retention_days: 30
+    test_restore_interval_days: 30
+    backup_location: "/infra/backups/"
+  snapshots:
+    frequency: "on_change"
+    retention_days: 90
+
+secrets_management:
+  production: "use_vault"
+  dev: "env_file_allowed"
+  rotate_keys_every_days: 90
+
+observability:
+  require_health_endpoints: ["/health", "/ready"]
+  json_logging_required: true
+  metrics_endpoints:
+    - service: "manager"
+      path: "/metrics"
+    - service: "accountant"
+      path: "/metrics"
+
+compliance_checks:
+  pre_release:
+    - backups_recent: true
+    - ci_green: true
+    - secrets_sanitized: true
+    - director_approval: true
+  post_release:
+    - backup_run: true
+    - smoke_tests_pass: true
+
+reporting:
+  project_state_path: "docs/project_state.md"
+  incident_report_path: "incidents/"
+  daily_summary: optional
+  escalation:
+    - level: "urgent"
+      notify: ["director_email", "slack_channel"]
+director_controls:
+  pause_organization_endpoint: "/admin/pause"
+  purge_archive_endpoint_require_key: true
+  director_api_key_env: "DIRECTOR_API_KEY"

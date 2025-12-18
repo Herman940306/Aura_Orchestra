@@ -1,0 +1,4 @@
+requests
+python-dotenv
+types-requests
+pyyaml

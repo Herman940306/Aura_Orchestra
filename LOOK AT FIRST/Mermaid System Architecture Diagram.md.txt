@@ -1,0 +1,30 @@
+DOCUMENT 3 — Mermaid: System Architecture Diagram
+flowchart LR
+    Director -->|Instructions| WebUI
+    Director -->|MCP| IDE
+
+    WebUI --> API_Gateway
+    IDE --> API_Gateway
+
+    API_Gateway --> Manager
+
+    Manager --> QueueDB
+    QueueDB --> Manager
+
+    Manager --> Employee1
+    Manager --> Employee2
+    Manager --> EmployeeN
+
+    Employee1 --> LogsDB
+    Employee2 --> LogsDB
+
+    LogsDB --> Auditor
+    Auditor --> Manager
+
+    Manager --> Accountant
+    Accountant --> Manager
+
+    Manager --> HR
+    HR --> Manager
+
+    Manager --> ArchiveDB
